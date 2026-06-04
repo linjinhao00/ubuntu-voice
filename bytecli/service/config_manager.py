@@ -20,6 +20,13 @@ from bytecli.constants import CONFIG_DIR, CONFIG_FILE, DEFAULT_CONFIG, WHISPER_M
 logger = logging.getLogger(__name__)
 
 
+def _is_function_key(key: str) -> bool:
+    normalised = key.upper()
+    if not normalised.startswith("F") or not normalised[1:].isdigit():
+        return False
+    return 1 <= int(normalised[1:]) <= 12
+
+
 class ConfigManager:
     """Manages the ByteCLI user configuration on disk."""
 
@@ -144,8 +151,11 @@ class ConfigManager:
             keys = hk.get("keys")
             if (
                 not isinstance(keys, list)
-                or not (2 <= len(keys) <= 3)
                 or not all(isinstance(k, str) and k for k in keys)
+                or not (
+                    (len(keys) == 1 and _is_function_key(keys[0]))
+                    or (2 <= len(keys) <= 3)
+                )
             ):
                 errors.append("hotkey.keys")
 

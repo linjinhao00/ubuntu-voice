@@ -142,7 +142,8 @@ class ModelSwitcher:
         callback: Callable[[str, str], None],
     ) -> None:
         try:
-            self._engine.unload_model()
+            # Keep previously loaded instances resident so hotkey dictation
+            # does not pay model-load cost after every profile switch.
             self._engine.load_model(new_model, old_device)
             self._finish(callback, "success", "")
         except Exception as exc:
@@ -157,7 +158,6 @@ class ModelSwitcher:
         callback: Callable[[str, str], None],
     ) -> None:
         try:
-            self._engine.unload_model()
             self._engine.load_model(old_model, new_device)
             self._finish(callback, "success", "")
         except Exception as exc:

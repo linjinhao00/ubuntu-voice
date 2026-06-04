@@ -50,6 +50,10 @@
       <arg name="config_json" type="s" direction="out"/>
     </method>
 
+    <method name="GetLastPerformance">
+      <arg name="metrics_json" type="s" direction="out"/>
+    </method>
+
     <method name="SaveConfig">
       <arg name="config_json" type="s" direction="in"/>
       <arg name="success" type="b" direction="out"/>

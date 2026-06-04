@@ -11,7 +11,7 @@ Speak your code into existence. Zero cloud, all local.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Ubuntu 22.04+](https://img.shields.io/badge/Ubuntu-22.04%2B-E95420?style=flat-square&logo=ubuntu&logoColor=white)](https://ubuntu.com)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-94%20passed-B6FFCE?style=flat-square)](#)
+[![Tests](https://img.shields.io/badge/Tests-102%20passed-B6FFCE?style=flat-square)](#)
 
 [Website](https://byte-cli.com) · [Download .deb](https://github.com/StriderXOXO/byteCLI/releases) · [Report Bug](https://github.com/StriderXOXO/byteCLI/issues)
 
@@ -29,7 +29,7 @@ $ byte --status
 
 <strong>0 bytes</strong> uploaded to the cloud. Ever.<br>
 <strong>~200ms</strong> transcription response.<br>
-<strong>1 hotkey</strong> — Ctrl+Alt+V, that's it.
+<strong>1 hotkey</strong> — F8, that's it.
 
 ---
 
@@ -49,7 +49,7 @@ Download from [Releases](https://github.com/StriderXOXO/byteCLI/releases). The s
 sudo apt install xclip xdotool portaudio19-dev python3-gi gir1.2-gtk-4.0
 git clone https://github.com/StriderXOXO/byteCLI.git
 cd byteCLI
-pip install -e .
+/usr/bin/python3 -m pip install --user .
 ./scripts/install.sh
 ```
 
@@ -67,12 +67,12 @@ The Snap package bundles its own GTK 4, libadwaita and Python 3.10+ runtime, so 
 
 ## Features
 
-- **One hotkey to rule them all** — Ctrl+Alt+V. Hold to record, release to paste. Done.
+- **One hotkey to rule them all** — F8. Hold to record, release to paste. Done.
 - **Your voice stays yours** — Runs entirely on your machine. Zero telemetry, zero cloud, zero API keys.
 - **Know what's happening** — A tiny pill at the top of your screen. Recording? You'll see it. Downloading model? Progress right there.
 - **Fast enough to not think about it** — CUDA GPU support for ~200ms response. CPU works too.
 - **你好, world** — English and Chinese out of the box.
-- **Choose your tradeoff** — Tiny (75 MB, instant) → Small (465 MB, balanced) → Medium (1.5 GB, accurate).
+- **Choose your tradeoff** — SenseVoiceSmall / Fun-ASR-Nano for 4GB VRAM, Qwen3-ASR for experiments, GLM-ASR-Nano for offline evaluation.
 
 ## Why does this exist?
 
@@ -117,7 +117,7 @@ Three processes, one D-Bus:
   "model": "small",
   "device": "gpu",
   "audio_input": "auto",
-  "hotkey": { "keys": ["Ctrl", "Alt", "V"] },
+  "hotkey": { "keys": ["F8"] },
   "language": "en",
   "auto_start": false,
   "history_max_entries": 50
@@ -128,11 +128,33 @@ Three processes, one D-Bus:
 
 | Model  | Size     | Speed   | Accuracy |
 |--------|----------|---------|----------|
-| tiny   | ~75 MB   | Fastest | Basic    |
-| small  | ~465 MB  | Good    | Good     |
-| medium | ~1.5 GB  | Slower  | Best     |
+| zh_fast | SenseVoiceSmall ONNX | Fast | 4GB VRAM Chinese default |
+| fun_asr_nano | Fun-ASR-Nano-2512 | Medium | Chinese/dialect focused |
+| experimental_qwen | Qwen3-ASR-0.6B | Slower | Experimental |
+| fast | faster-whisper small int8 | Fastest | Stable fallback |
+| balanced | faster-whisper small int8 beam=3 | Good | Stable fallback |
+| glm_low_volume | GLM-ASR-Nano-2512 | Slow | Offline evaluation only |
+| tiny/small/medium | OpenAI Whisper fallback | Varies | Legacy fallback |
 
 Models are downloaded automatically on first use to `~/.local/share/bytecli/models/`.
+
+### Local ASR Evaluation
+
+ByteCLI includes a local benchmark runner for low-volume Chinese dictation. It
+keeps audio and reports on this machine under `~/.local/share/bytecli/eval/`.
+
+```bash
+bytecli-asr-eval --write-template ~/.local/share/bytecli/eval/manifest.csv
+bytecli-asr-eval \
+  --manifest ~/.local/share/bytecli/eval/manifest.csv \
+  --profiles glm_low_volume,fun_asr_nano,experimental_qwen,zh_fast,fast \
+  --preprocessors raw,vad_norm,denoise_norm \
+  --levels 0,-12,-24,-36 \
+  --device gpu
+```
+
+The report includes CER/WER, Chinese character CER, latency, RTF, peak VRAM,
+audio level diagnostics, VAD signal, and hallucination-blocking flags.
 
 ## Troubleshooting
 
@@ -152,7 +174,7 @@ journalctl --user -u bytecli -n 50
 
 **GPU not detected**
 - Ensure NVIDIA drivers and CUDA toolkit are installed
-- Verify: `python3 -c "import torch; print(torch.cuda.is_available())"`
+- Verify: `/usr/bin/python3 -c "import torch; print(torch.cuda.is_available())"`
 
 **Model download seems stuck**
 - First-run downloads can take several minutes depending on your connection

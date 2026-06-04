@@ -189,8 +189,8 @@ def main() -> None:
 
         hotkey_manager.on_press(recording_fsm.on_hotkey_toggle)
 
-        # 15. Register the fixed Ctrl+Alt+V hotkey.
-        hotkey_keys = ["Ctrl", "Alt", "V"]
+        # 15. Register the configured hotkey.
+        hotkey_keys = config.get("hotkey", {}).get("keys", ["F8"])
         try:
             hotkey_manager.register(hotkey_keys)
         except Exception as exc:
@@ -300,7 +300,7 @@ def main() -> None:
                     pass
                 _send_notification(
                     "ByteCLI is ready!",
-                    "Press Ctrl+Alt+V to dictate.",
+                    "Press F8 to dictate.",
                 )
             else:
                 logger.error("Whisper model load failed: %s", message)

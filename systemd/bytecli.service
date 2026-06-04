@@ -7,6 +7,7 @@ Type=simple
 ExecStart=%h/.local/bin/bytecli-service
 Environment=DISPLAY=:0
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib
 Restart=on-failure
 RestartSec=5
 StartLimitBurst=3

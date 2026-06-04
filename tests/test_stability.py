@@ -7,7 +7,7 @@ model switcher, recording FSM, and corner cases.  All heavy dependencies
 with Python 3.10+ and pytest.
 
 Run:
-    python -m pytest tests/test_stability.py -v
+    /usr/bin/python3 -m pytest tests/test_stability.py -v
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import os
 import tempfile
 import threading
 import time
+import types
 import uuid
 from unittest import mock
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -51,6 +52,17 @@ class TestConfigManager:
         assert config["model"] == DEFAULT_CONFIG["model"]
         assert config["device"] == DEFAULT_CONFIG["device"]
         assert os.path.isfile(mgr.config_file)
+
+    def test_sensevoice_hidden_without_model_dir(self, monkeypatch):
+        import importlib
+        import bytecli.constants as constants
+
+        monkeypatch.delenv("BYTECLI_SENSEVOICE_ONNX_MODEL_DIR", raising=False)
+        reloaded = importlib.reload(constants)
+        try:
+            assert "zh_fast" not in reloaded.VISIBLE_INFERENCE_PROFILES
+        finally:
+            importlib.reload(constants)
 
     def test_save_and_reload(self, tmp_path):
         mgr = self._make_manager(str(tmp_path))
@@ -113,9 +125,16 @@ class TestConfigManager:
     def test_validate_invalid_hotkey(self, tmp_path):
         mgr = self._make_manager(str(tmp_path))
         bad = copy.deepcopy(DEFAULT_CONFIG)
-        bad["hotkey"] = {"keys": ["A"]}  # Too few keys
+        bad["hotkey"] = {"keys": ["A"]}  # Single non-function key
         errors = mgr.validate(bad)
         assert "hotkey.keys" in errors
+
+    def test_validate_single_function_key_hotkey(self, tmp_path):
+        mgr = self._make_manager(str(tmp_path))
+        good = copy.deepcopy(DEFAULT_CONFIG)
+        good["hotkey"] = {"keys": ["F8"]}
+        errors = mgr.validate(good)
+        assert "hotkey.keys" not in errors
 
     def test_validate_history_max_entries_boundary(self, tmp_path):
         mgr = self._make_manager(str(tmp_path))
@@ -851,6 +870,225 @@ class TestWhisperEngine:
         finally:
             del sys.modules["whisper"]
 
+    def test_faster_whisper_profile_transcribes_and_records_metrics(self):
+        from bytecli.service.whisper_engine import WhisperEngine
+        import numpy as np
+        import sys
+
+        captured = {}
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = (
+            [types.SimpleNamespace(text=" hello"), types.SimpleNamespace(text=" world")],
+            object(),
+        )
+
+        class FakeWhisperModel:
+            def __init__(self, *args, **kwargs):
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+
+            def transcribe(self, *args, **kwargs):
+                captured["transcribe_kwargs"] = kwargs
+                return mock_model.transcribe(*args, **kwargs)
+
+        sys.modules["faster_whisper"] = types.SimpleNamespace(
+            WhisperModel=FakeWhisperModel
+        )
+        try:
+            engine = WhisperEngine()
+            engine.load_model("fast", "cpu")
+            text = engine.transcribe(np.ones(16000, dtype=np.float32) * 0.1)
+
+            assert text == "hello world"
+            assert engine.current_model == "fast"
+            assert captured["kwargs"]["compute_type"] == "int8"
+            assert captured["transcribe_kwargs"]["beam_size"] == 1
+            assert captured["transcribe_kwargs"]["word_timestamps"] is False
+            assert "initial_prompt" not in captured["transcribe_kwargs"]
+            assert engine.last_metrics["backend"] == "faster_whisper"
+            assert engine.last_metrics["profile"] == "fast"
+        finally:
+            del sys.modules["faster_whisper"]
+
+    def test_qwen_profile_transcribes_and_records_metrics(self):
+        from bytecli.service.whisper_engine import WhisperEngine
+        import numpy as np
+        import sys
+
+        captured = {}
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = [types.SimpleNamespace(text="你好 Qwen")]
+
+        class FakeQwen3ASRModel:
+            @classmethod
+            def from_pretrained(cls, *args, **kwargs):
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+                return mock_model
+
+        fake_torch = types.SimpleNamespace(
+            bfloat16=object(),
+            float16=object(),
+            float32=object(),
+        )
+        old_torch = sys.modules.get("torch")
+        old_qwen_asr = sys.modules.get("qwen_asr")
+        sys.modules["torch"] = fake_torch
+        sys.modules["qwen_asr"] = types.SimpleNamespace(Qwen3ASRModel=FakeQwen3ASRModel)
+        try:
+            engine = WhisperEngine()
+            engine.load_model("experimental_qwen", "gpu")
+            text = engine.transcribe(np.ones(16000, dtype=np.float32) * 0.1)
+
+            assert text == "你好 Qwen"
+            assert captured["args"] == ("Qwen/Qwen3-ASR-0.6B",)
+            assert captured["kwargs"]["dtype"] is fake_torch.bfloat16
+            assert captured["kwargs"]["device_map"] == "cuda:0"
+            assert captured["kwargs"]["max_inference_batch_size"] == 1
+            assert captured["kwargs"]["max_new_tokens"] == 256
+            mock_model.transcribe.assert_called_once()
+            transcribe_kwargs = mock_model.transcribe.call_args.kwargs
+            audio_arg, sample_rate = transcribe_kwargs["audio"]
+            assert sample_rate == 16000
+            assert audio_arg.dtype == np.float32
+            assert "context" not in transcribe_kwargs
+            assert transcribe_kwargs["language"] is None
+            assert transcribe_kwargs["return_time_stamps"] is False
+            assert engine.last_metrics["backend"] == "qwen_asr"
+            assert engine.last_metrics["profile"] == "experimental_qwen"
+        finally:
+            if old_torch is not None:
+                sys.modules["torch"] = old_torch
+            else:
+                del sys.modules["torch"]
+            if old_qwen_asr is not None:
+                sys.modules["qwen_asr"] = old_qwen_asr
+            else:
+                del sys.modules["qwen_asr"]
+
+    def test_fun_asr_nano_profile_transcribes_and_records_metrics(self):
+        from bytecli.service import audio_preprocess
+        from bytecli.service.whisper_engine import WhisperEngine
+        import numpy as np
+        import os
+        import sys
+        import tempfile
+
+        captured = {}
+
+        class FakeFunASRModel:
+            def generate(self, *args, **kwargs):
+                captured["generate_args"] = args
+                captured["generate_kwargs"] = kwargs
+                return [{"text": "你好 FunASR"}]
+
+        class FakeAutoModel:
+            def __init__(self, *args, **kwargs):
+                captured["load_args"] = args
+                captured["load_kwargs"] = kwargs
+
+            def generate(self, *args, **kwargs):
+                return FakeFunASRModel().generate(*args, **kwargs)
+
+        old_funasr = sys.modules.get("funasr")
+        old_detect = audio_preprocess.detect_speech_ratio
+        old_model_dir = os.environ.get("BYTECLI_FUN_ASR_MODEL_DIR")
+        sys.modules["funasr"] = types.SimpleNamespace(AutoModel=FakeAutoModel)
+        audio_preprocess.detect_speech_ratio = lambda audio: (None, "energy")
+        try:
+            with tempfile.TemporaryDirectory() as model_dir:
+                os.environ["BYTECLI_FUN_ASR_MODEL_DIR"] = model_dir
+                engine = WhisperEngine()
+                engine.load_model("fun_asr_nano", "gpu")
+                text = engine.transcribe(np.ones(16000, dtype=np.float32) * 0.01)
+
+            assert text == "你好 FunASR"
+            assert captured["load_kwargs"]["model"] == model_dir
+            assert captured["load_kwargs"]["trust_remote_code"] is True
+            assert captured["load_kwargs"]["device"] == "cuda:0"
+            assert captured["load_kwargs"]["hub"] == "hf"
+            assert captured["load_kwargs"]["disable_update"] is True
+            assert captured["load_kwargs"]["disable_pbar"] is True
+            assert captured["generate_kwargs"]["batch_size"] == 1
+            assert captured["generate_kwargs"]["language"] == "中文"
+            assert captured["generate_kwargs"]["itn"] is True
+            assert captured["generate_kwargs"]["disable_pbar"] is True
+            assert captured["generate_kwargs"]["input"][0].endswith(".wav")
+            assert engine.last_metrics["backend"] == "funasr_nano"
+            assert engine.last_metrics["profile"] == "fun_asr_nano"
+        finally:
+            audio_preprocess.detect_speech_ratio = old_detect
+            if old_model_dir is None:
+                os.environ.pop("BYTECLI_FUN_ASR_MODEL_DIR", None)
+            else:
+                os.environ["BYTECLI_FUN_ASR_MODEL_DIR"] = old_model_dir
+            if old_funasr is not None:
+                sys.modules["funasr"] = old_funasr
+            else:
+                del sys.modules["funasr"]
+
+    def test_qwen_hallucination_phrase_is_blocked(self):
+        from bytecli.service import audio_preprocess
+        from bytecli.service.whisper_engine import WhisperEngine
+        import numpy as np
+        import sys
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = [
+            types.SimpleNamespace(text="请点准确认识英语和英语的语音转录。")
+        ]
+
+        class FakeQwen3ASRModel:
+            @classmethod
+            def from_pretrained(cls, *args, **kwargs):
+                return mock_model
+
+        fake_torch = types.SimpleNamespace(
+            bfloat16=object(),
+            float16=object(),
+            float32=object(),
+        )
+        old_torch = sys.modules.get("torch")
+        old_qwen_asr = sys.modules.get("qwen_asr")
+        sys.modules["torch"] = fake_torch
+        sys.modules["qwen_asr"] = types.SimpleNamespace(Qwen3ASRModel=FakeQwen3ASRModel)
+        old_detect = audio_preprocess.detect_speech_ratio
+        audio_preprocess.detect_speech_ratio = lambda audio: (None, "energy")
+        try:
+            engine = WhisperEngine()
+            engine.load_model("experimental_qwen", "gpu")
+            text = engine.transcribe(np.ones(16000, dtype=np.float32) * 0.01)
+
+            assert text == ""
+            assert engine.last_metrics["hallucination_blocked"] is True
+            assert engine.last_metrics["validation_reason"] == "hallucination_pattern"
+        finally:
+            audio_preprocess.detect_speech_ratio = old_detect
+            if old_torch is not None:
+                sys.modules["torch"] = old_torch
+            else:
+                del sys.modules["torch"]
+            if old_qwen_asr is not None:
+                sys.modules["qwen_asr"] = old_qwen_asr
+            else:
+                del sys.modules["qwen_asr"]
+
+    def test_qwen_missing_dependency_message(self):
+        from bytecli.service.whisper_engine import WhisperEngine
+        import sys
+
+        old_qwen_asr = sys.modules.get("qwen_asr")
+        sys.modules["qwen_asr"] = None
+        engine = WhisperEngine()
+        try:
+            with pytest.raises(RuntimeError, match="qwen-asr could not be imported"):
+                engine.load_model("experimental_qwen", "cpu")
+        finally:
+            if old_qwen_asr is not None:
+                sys.modules["qwen_asr"] = old_qwen_asr
+            else:
+                del sys.modules["qwen_asr"]
+
     def test_collapse_repeats(self):
         from bytecli.service.whisper_engine import _collapse_repeats
         assert _collapse_repeats("我我我我我我我我") == "我我我"
@@ -858,6 +1096,40 @@ class TestWhisperEngine:
         assert _collapse_repeats("") == ""
         assert _collapse_repeats("aaa") == "aaa"  # Exactly 3 is OK
         assert _collapse_repeats("aaaa") == "aaa"  # 4 collapses to 3
+
+    def test_low_volume_audio_preprocessor_normalizes_without_skipping(self):
+        from bytecli.service import audio_preprocess
+        from bytecli.service.audio_preprocess import AudioPreprocessor
+        import numpy as np
+
+        t = np.linspace(0, 1, 16000, endpoint=False)
+        quiet = (np.sin(2 * np.pi * 220 * t) * 0.001).astype(np.float32)
+        old_detect = audio_preprocess.detect_speech_ratio
+        audio_preprocess.detect_speech_ratio = lambda audio: (None, "energy")
+        try:
+            result = AudioPreprocessor("vad_norm").process(quiet)
+        finally:
+            audio_preprocess.detect_speech_ratio = old_detect
+
+        assert result.skipped is False
+        assert result.gain_db > 10
+        assert result.output.peak <= 1.0
+        assert result.output.rms > result.input.rms
+
+    def test_silent_audio_preprocessor_skips(self):
+        from bytecli.service.audio_preprocess import AudioPreprocessor
+        import numpy as np
+
+        result = AudioPreprocessor("vad_norm").process(np.zeros(16000, dtype=np.float32))
+
+        assert result.skipped is True
+        assert result.skip_reason == "no_speech"
+
+    def test_eval_error_metrics(self):
+        from bytecli.eval.asr_eval import _cer, _wer
+
+        assert _cer("你好", "你号") == 0.5
+        assert _wer("", "") == 0.0
 
 
 # ===================================================================

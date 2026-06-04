@@ -68,13 +68,18 @@ fi
 # ----------------------------------------------------------------
 step "Installing ByteCLI Python package"
 
-if ! command -v pip3 &>/dev/null; then
-    error "pip3 not found. Please install python3-pip first."
+if [ ! -x /usr/bin/python3 ]; then
+    error "/usr/bin/python3 not found."
     exit 1
 fi
 
-pip3 install --user -e "${PROJECT_DIR}"
-success "ByteCLI Python package installed (editable mode)"
+if ! /usr/bin/python3 -m pip --version &>/dev/null; then
+    error "pip for /usr/bin/python3 not found. Please install python3-pip first."
+    exit 1
+fi
+
+/usr/bin/python3 -m pip install --user "${PROJECT_DIR}"
+success "ByteCLI Python package installed"
 
 # ----------------------------------------------------------------
 # 4. Create data directories
@@ -152,7 +157,7 @@ echo -e "${GREEN}${BOLD}========================================${NC}"
 echo ""
 echo -e "ByteCLI is running! Look for the indicator at the bottom of your screen."
 echo ""
-echo -e "  ${CYAN}*${NC} Press ${BOLD}Ctrl+Alt+V${NC} to start dictating."
+echo -e "  ${CYAN}*${NC} Press ${BOLD}F8${NC} to start dictating."
 echo -e "  ${CYAN}*${NC} Open Settings from your application menu: ${BOLD}ByteCLI Settings${NC}"
 echo -e "  ${CYAN}*${NC} Check service status: ${BOLD}systemctl --user status bytecli${NC}"
 echo ""

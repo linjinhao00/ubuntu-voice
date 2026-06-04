@@ -45,7 +45,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def __init__(self, application: Adw.Application) -> None:
         super().__init__(application=application)
 
-        self.set_default_size(480, -1)
+        self.set_default_size(500, 640)
         self.set_title(i18n.t("panel.title", fallback="Voice Dictation Settings"))
 
         # Apply window CSS.
@@ -86,12 +86,14 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._overlay = Gtk.Overlay()
         self._toast_overlay = SettingsToastOverlay(self._overlay)
 
+        panel_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
         # Main content box.
-        self._content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
-        self._content_box.set_margin_start(24)
-        self._content_box.set_margin_end(24)
-        self._content_box.set_margin_top(16)
-        self._content_box.set_margin_bottom(24)
+        self._content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self._content_box.set_margin_start(16)
+        self._content_box.set_margin_end(16)
+        self._content_box.set_margin_top(12)
+        self._content_box.set_margin_bottom(12)
 
         # --- Sections ---
         self._server_section = ServerStatusSection(self._dbus_client)
@@ -126,7 +128,10 @@ class SettingsWindow(Adw.ApplicationWindow):
         # --- Save / Cancel row ---
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         btn_row.set_halign(Gtk.Align.END)
-        btn_row.set_margin_top(8)
+        btn_row.set_margin_start(16)
+        btn_row.set_margin_end(16)
+        btn_row.set_margin_top(12)
+        btn_row.set_margin_bottom(12)
 
         self._cancel_btn = StyledButton(
             label=i18n.t("panel.cancel", fallback="Cancel"),
@@ -144,9 +149,18 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._save_btn.set_disabled(True)
         btn_row.append(self._save_btn)
 
-        self._content_box.append(btn_row)
+        self._scroller = Gtk.ScrolledWindow()
+        self._scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self._scroller.set_child(self._content_box)
+        self._scroller.set_vexpand(True)
 
-        self._overlay.set_child(self._content_box)
+        footer_separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+
+        panel_box.append(self._scroller)
+        panel_box.append(footer_separator)
+        panel_box.append(btn_row)
+        self._overlay.set_child(panel_box)
+        self._overlay.set_vexpand(True)
 
         # Wrap header bar + overlay in a vertical box.
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -186,9 +200,16 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _update_save_cancel(self) -> None:
         """Enable Save/Cancel only when live config differs from snapshot."""
         changed = self._config != self._config_snapshot
+        switching = any(
+            bool(getattr(section, "is_switching", False))
+            for section in (
+                self._model_section,
+                self._device_section,
+            )
+        )
         # Never allow saving if config wasn't loaded from the service,
         # as we'd overwrite live config with defaults.
-        can_save = changed and self._config_loaded_from_service
+        can_save = changed and self._config_loaded_from_service and not switching
         self._save_btn.set_disabled(not can_save)
         self._cancel_btn.set_disabled(not changed)
 

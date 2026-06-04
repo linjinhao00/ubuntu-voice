@@ -106,6 +106,10 @@ class DeviceSelectionSection(Gtk.Box):
     # Selection
     # ------------------------------------------------------------------
 
+    @property
+    def is_switching(self) -> bool:
+        return self._switching
+
     def _apply_selection(self, device: str) -> None:
         self._gpu_radio.selected = device == "gpu"
         self._cpu_radio.selected = device == "cpu"
@@ -125,6 +129,7 @@ class DeviceSelectionSection(Gtk.Box):
         other_radio = self._cpu_radio if device == "gpu" else self._gpu_radio
         active_radio.show_spinner()
         other_radio.disabled = True
+        self._on_changed()
 
         params = GLib.Variant("(s)", (device,))
         self._dbus_client._call_async(
@@ -145,6 +150,8 @@ class DeviceSelectionSection(Gtk.Box):
         else:
             self._revert_device()
 
+        self._on_changed()
+
         if self._restore_timeout_id is not None:
             GLib.source_remove(self._restore_timeout_id)
         self._restore_timeout_id = GLib.timeout_add(2000, self._restore_ui)
@@ -155,6 +162,7 @@ class DeviceSelectionSection(Gtk.Box):
             logger.warning("Device switch timed out in settings UI.")
             self._switching = False
             self._revert_device()
+            self._on_changed()
             if self._restore_timeout_id is not None:
                 GLib.source_remove(self._restore_timeout_id)
             self._restore_timeout_id = GLib.timeout_add(2000, self._restore_ui)

@@ -36,30 +36,31 @@ STAGING="${PROJECT_DIR}/staging"
 info "Cleaning previous staging directory..."
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
+WHEEL_DIR="$(mktemp -d)"
+trap 'rm -rf "${WHEEL_DIR}"' EXIT
 
 # ----------------------------------------------------------------
 # 2. Install Python package into staging prefix
 # ----------------------------------------------------------------
-info "Installing Python package into staging prefix..."
-pip3 install --prefix="${STAGING}/usr" --no-deps --no-warn-script-location "${PROJECT_DIR}" 2>&1 | grep -v '^\[notice\]' || true
+info "Building Python wheel for staging..."
+/usr/bin/python3 -m pip wheel --no-deps --wheel-dir "${WHEEL_DIR}" "${PROJECT_DIR}" 2>&1 | grep -v '^\[notice\]' || true
 
-# Find the dist-packages/site-packages directory that pip created.
-# On Debian/Ubuntu, --prefix installs to <prefix>/local/lib/pythonX.Y/dist-packages.
-SITE_PACKAGES=$(find "${STAGING}/usr" -type d \( -name "dist-packages" -o -name "site-packages" \) 2>/dev/null | head -1)
-
-if [ -z "${SITE_PACKAGES}" ]; then
-    error "Could not find installed Python package in staging directory"
+WHEEL_FILE=$(find "${WHEEL_DIR}" -maxdepth 1 -name "${PACKAGE_NAME}-${VERSION}-*.whl" | head -1)
+if [ -z "${WHEEL_FILE}" ]; then
+    error "Could not build Python wheel"
 fi
 
-# Move to the standard Debian path: /usr/lib/python3/dist-packages
 DIST_PACKAGES="${STAGING}/usr/lib/python3/dist-packages"
-if [ "${SITE_PACKAGES}" != "${DIST_PACKAGES}" ]; then
-    mkdir -p "${DIST_PACKAGES}"
-    cp -r "${SITE_PACKAGES}/${PACKAGE_NAME}" "${DIST_PACKAGES}/"
-    cp -r "${SITE_PACKAGES}/${PACKAGE_NAME}"*.dist-info "${DIST_PACKAGES}/" 2>/dev/null || true
-    # Clean up the pip-created tree (e.g. usr/local/lib/...)
-    rm -rf "${STAGING}/usr/local"
-fi
+mkdir -p "${DIST_PACKAGES}"
+
+/usr/bin/python3 - "${WHEEL_FILE}" "${DIST_PACKAGES}" << 'PY'
+import sys
+import zipfile
+
+wheel_file, target_dir = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(wheel_file) as zf:
+    zf.extractall(target_dir)
+PY
 success "Python package installed to ${DIST_PACKAGES}"
 
 # ----------------------------------------------------------------
@@ -69,26 +70,33 @@ info "Creating wrapper scripts..."
 mkdir -p "${STAGING}/usr/bin"
 
 cat > "${STAGING}/usr/bin/bytecli-service" << 'WRAPPER'
-#!/usr/bin/env python3
+#!/usr/bin/python3
 from bytecli.service.main import main
 main()
 WRAPPER
 
 cat > "${STAGING}/usr/bin/bytecli-indicator" << 'WRAPPER'
-#!/usr/bin/env python3
+#!/usr/bin/python3
 from bytecli.indicator.main import main
 main()
 WRAPPER
 
 cat > "${STAGING}/usr/bin/bytecli-settings" << 'WRAPPER'
-#!/usr/bin/env python3
+#!/usr/bin/python3
 from bytecli.settings.main import main
 main()
+WRAPPER
+
+cat > "${STAGING}/usr/bin/bytecli-asr-eval" << 'WRAPPER'
+#!/usr/bin/python3
+from bytecli.eval.asr_eval import main
+raise SystemExit(main())
 WRAPPER
 
 chmod 755 "${STAGING}/usr/bin/bytecli-service"
 chmod 755 "${STAGING}/usr/bin/bytecli-indicator"
 chmod 755 "${STAGING}/usr/bin/bytecli-settings"
+chmod 755 "${STAGING}/usr/bin/bytecli-asr-eval"
 success "Wrapper scripts created"
 
 # ----------------------------------------------------------------
@@ -108,6 +116,7 @@ Type=simple
 ExecStart=/usr/bin/bytecli-service
 Environment=DISPLAY=:0
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib
 Restart=on-failure
 RestartSec=5
 StartLimitBurst=3

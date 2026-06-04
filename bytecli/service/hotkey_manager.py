@@ -83,7 +83,8 @@ class HotkeyManager:
         Parameters
         ----------
         keys_list:
-            Human-readable key names, e.g. ``["Ctrl", "Alt", "V"]``.
+            Human-readable key names, e.g. ``["F8"]`` or
+            ``["Ctrl", "Alt", "V"]``.
         """
         self.unregister()  # clean up any previous grab
 
@@ -96,17 +97,31 @@ class HotkeyManager:
         if self._keycode == 0:
             raise ValueError(f"Could not resolve keysym for keys: {keys_list}")
 
+        grab_errors: list[object] = []
+
+        def _grab_error_handler(err, _request=None):
+            grab_errors.append(err)
+
+        self._display.set_error_handler(_grab_error_handler)
+
         # Grab with every lock-mask combination.
         for extra_mask in _LOCK_MASKS:
             self._root.grab_key(
                 self._keycode,
                 self._modifier_mask | extra_mask,
-                True,
+                False,
                 X.GrabModeAsync,
                 X.GrabModeAsync,
             )
 
-        self._display.flush()
+        self._display.sync()
+        self._display.set_error_handler(None)
+
+        if grab_errors:
+            details = ", ".join(type(err).__name__ for err in grab_errors)
+            self.unregister()
+            raise RuntimeError(f"Hotkey is already grabbed by another client: {details}")
+
         logger.info("Hotkey registered: %s (keycode=%d, mask=0x%X)",
                      "+".join(keys_list), self._keycode, self._modifier_mask)
 
@@ -175,7 +190,7 @@ class HotkeyManager:
                 self._root.grab_key(
                     self._keycode,
                     self._modifier_mask | extra_mask,
-                    True,
+                    False,
                     X.GrabModeAsync,
                     X.GrabModeAsync,
                 )

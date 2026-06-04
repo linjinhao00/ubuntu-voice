@@ -188,8 +188,20 @@ class RecordingFSM:
             self._emit_stopped("")
             return
 
+        from bytecli.service.whisper_engine import WhisperEngine
+
+        if WhisperEngine.is_probably_silent(audio_data):
+            logger.info("Silent audio buffer -- skipping transcription.")
+            self._state = RecordingState.IDLE
+            self._emit_stopped("")
+            return
+
         self._state = RecordingState.TRANSCRIBING
         duration_ms = int(duration * 1000)
+
+        # The capture has ended now. Let the indicator leave recording state
+        # immediately instead of waiting for ASR inference to finish.
+        self._emit_stopped("")
 
         logger.info(
             "Recording stopped (%.2f s). Submitting for transcription.", duration

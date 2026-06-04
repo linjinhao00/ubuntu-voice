@@ -8,7 +8,9 @@ device enumeration and hot-plug monitoring.
 from __future__ import annotations
 
 import logging
+import os
 import threading
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
@@ -16,6 +18,14 @@ import numpy as np
 from bytecli.constants import AUDIO_BUFFER_FRAMES, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RecordingDeviceInfo:
+    requested: Optional[str]
+    portaudio_device: Optional[object]
+    pulse_source: Optional[str]
+    used_default_fallback: bool = False
 
 
 class AudioManager:
@@ -29,6 +39,11 @@ class AudioManager:
         self._hotplug_thread: Optional[threading.Thread] = None
         self._hotplug_running = False
         self._pulse_hotplug = None  # pulsectl.Pulse instance for events
+        self._last_device_info = RecordingDeviceInfo(None, None, None, False)
+
+    @property
+    def last_device_info(self) -> RecordingDeviceInfo:
+        return self._last_device_info
 
     # ------------------------------------------------------------------
     # Device enumeration
@@ -60,7 +75,11 @@ class AudioManager:
     # Recording
     # ------------------------------------------------------------------
 
-    def start_recording(self, device_id: Optional[str] = None) -> None:
+    def start_recording(
+        self,
+        device_id: Optional[str] = None,
+        allow_fallback: bool = True,
+    ) -> None:
         """Begin recording audio from *device_id* (or the default source).
 
         Audio is captured via a ``sounddevice.InputStream`` in callback mode
@@ -76,7 +95,8 @@ class AudioManager:
             self._chunks = []
             self._recording = True
 
-        device = device_id if device_id and device_id != "auto" else None
+        requested_device = device_id if device_id and device_id != "auto" else None
+        device, pulse_source = self._resolve_input_device(sd, requested_device)
 
         def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
             if status:
@@ -85,27 +105,102 @@ class AudioManager:
                 if self._recording:
                     self._chunks.append(indata.copy())
 
+        def _open_stream(
+            selected_device: Optional[object],
+            selected_pulse_source: Optional[str] = None,
+        ) -> None:
+            old_pulse_source = os.environ.get("PULSE_SOURCE")
+            if selected_pulse_source:
+                os.environ["PULSE_SOURCE"] = selected_pulse_source
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=AUDIO_SAMPLE_RATE,
+                    channels=AUDIO_CHANNELS,
+                    dtype="float32",
+                    blocksize=AUDIO_BUFFER_FRAMES,
+                    device=selected_device,
+                    callback=_callback,
+                )
+                self._stream.start()
+            finally:
+                if selected_pulse_source:
+                    if old_pulse_source is None:
+                        os.environ.pop("PULSE_SOURCE", None)
+                    else:
+                        os.environ["PULSE_SOURCE"] = old_pulse_source
+
         try:
-            self._stream = sd.InputStream(
-                samplerate=AUDIO_SAMPLE_RATE,
-                channels=AUDIO_CHANNELS,
-                dtype="float32",
-                blocksize=AUDIO_BUFFER_FRAMES,
-                device=device,
-                callback=_callback,
+            _open_stream(device, pulse_source)
+            self._last_device_info = RecordingDeviceInfo(
+                requested_device,
+                device,
+                pulse_source,
+                False,
             )
-            self._stream.start()
             logger.info(
-                "Recording started (device=%s, rate=%d, channels=%d).",
-                device or "default",
+                "Recording started (requested=%s, portaudio=%s, pulse_source=%s, "
+                "rate=%d, channels=%d).",
+                requested_device or "default",
+                device if device is not None else "default",
+                pulse_source or "",
                 AUDIO_SAMPLE_RATE,
                 AUDIO_CHANNELS,
             )
         except Exception as exc:
+            if requested_device is not None and allow_fallback:
+                logger.warning(
+                    "Configured audio input '%s' failed (%s); falling back to default.",
+                    requested_device,
+                    exc,
+                )
+                try:
+                    _open_stream(None)
+                    self._last_device_info = RecordingDeviceInfo(
+                        requested_device,
+                        None,
+                        None,
+                        True,
+                    )
+                    with self._lock:
+                        self._recording = True
+                    logger.info(
+                        "Recording started (device=default fallback, rate=%d, channels=%d).",
+                        AUDIO_SAMPLE_RATE,
+                        AUDIO_CHANNELS,
+                    )
+                    return
+                except Exception as fallback_exc:
+                    logger.error("Default audio fallback failed: %s", fallback_exc)
+                    exc = fallback_exc
+
             with self._lock:
                 self._recording = False
             logger.error("Failed to start recording: %s", exc)
             raise
+
+    @staticmethod
+    def _resolve_input_device(sd, device_id: Optional[str]) -> tuple[Optional[object], Optional[str]]:
+        if not device_id:
+            return None, None
+
+        try:
+            devices = sd.query_devices()
+        except Exception as exc:
+            logger.debug("sounddevice query_devices failed: %s", exc)
+            return None, device_id
+
+        normalized = device_id.lower()
+        for index, dev in enumerate(devices):
+            name = str(dev.get("name", ""))
+            max_inputs = int(dev.get("max_input_channels", 0) or 0)
+            if max_inputs <= 0:
+                continue
+            if normalized == name.lower() or normalized in name.lower():
+                return index, None
+
+        # With the PulseAudio PortAudio backend, individual sources are often
+        # selected via PULSE_SOURCE while the PortAudio device remains default.
+        return None, device_id
 
     def stop_recording(self) -> np.ndarray:
         """Stop the current recording and return the audio as a 1-D float32 array.

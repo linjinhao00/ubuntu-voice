@@ -115,8 +115,8 @@ fi
 # ----------------------------------------------------------------
 step "Uninstalling ByteCLI Python package"
 
-if pip3 show bytecli &>/dev/null; then
-    pip3 uninstall bytecli -y
+if /usr/bin/python3 -m pip show bytecli &>/dev/null; then
+    /usr/bin/python3 -m pip uninstall bytecli -y
     success "ByteCLI Python package uninstalled"
 else
     info "ByteCLI Python package not found (already removed)"

@@ -1,5 +1,5 @@
 """
-HotkeyConfigSection -- displays the fixed Ctrl+Alt+V hotkey binding.
+HotkeyConfigSection -- displays the fixed F8 hotkey binding.
 
 The hotkey is not user-configurable; this section simply shows the
 current binding as a read-only label.
@@ -18,7 +18,7 @@ from bytecli.settings.widgets.section_card import SectionCard
 
 
 class HotkeyConfigSection(Gtk.Box):
-    """Read-only display of the fixed Ctrl+Alt+V hotkey."""
+    """Read-only display of the fixed F8 hotkey."""
 
     def __init__(self, **_kwargs) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -38,11 +38,11 @@ class HotkeyConfigSection(Gtk.Box):
         self._trigger_label.set_halign(Gtk.Align.START)
         row.append(self._trigger_label)
 
-        value_label = Gtk.Label(label="Ctrl + Alt + V")
-        value_label.add_css_class("mono")
-        value_label.add_css_class("font-semibold")
-        value_label.set_halign(Gtk.Align.START)
-        row.append(value_label)
+        self._value_label = Gtk.Label(label="F8")
+        self._value_label.add_css_class("mono")
+        self._value_label.add_css_class("font-semibold")
+        self._value_label.set_halign(Gtk.Align.START)
+        row.append(self._value_label)
 
         self._card.card_content.append(row)
         self.append(self._card)
@@ -54,3 +54,4 @@ class HotkeyConfigSection(Gtk.Box):
         self._trigger_label.set_text(
             i18n.t("hotkey.trigger_key", fallback="Trigger Key:")
         )
+        self._value_label.set_text("F8")

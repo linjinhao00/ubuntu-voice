@@ -2,11 +2,18 @@
 set -e
 case "$1" in
   configure)
-    # Install Whisper via pip (not available in apt)
-    echo "ByteCLI: Installing speech recognition engine (openai-whisper + PyTorch)..."
+    # Install ASR runtimes via pip (not available in apt)
+    echo "ByteCLI: Installing speech recognition engines..."
     echo "ByteCLI: This may take several minutes on first install."
-    pip3 install --break-system-packages openai-whisper 2>/dev/null || \
-    pip3 install openai-whisper 2>/dev/null || true
+    if [ -n "$SUDO_USER" ]; then
+        su - "$SUDO_USER" -c \
+          "/usr/bin/python3 -m pip install --user --extra-index-url https://download.pytorch.org/whl/cu121 faster-whisper openai-whisper 'funasr>=1.3.3' 'torchaudio==2.5.1' 'qwen-asr>=0.0.6' 'Pillow>=10'" \
+          2>/dev/null || true
+    else
+        /usr/bin/python3 -m pip install --user --extra-index-url https://download.pytorch.org/whl/cu121 \
+          faster-whisper openai-whisper 'funasr>=1.3.3' 'torchaudio==2.5.1' 'qwen-asr>=0.0.6' 'Pillow>=10' \
+          2>/dev/null || true
+    fi
 
     # Enable the user service globally (for all users, on next login)
     systemctl --global enable bytecli.service 2>/dev/null || true

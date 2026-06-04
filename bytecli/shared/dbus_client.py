@@ -185,6 +185,21 @@ class DBusClient:
         params = GLib.Variant("(s)", (json.dumps(config),))
         self._call_async("SaveConfig", parameters=params, callback=callback)
 
+    def get_last_performance(self) -> Optional[dict]:
+        result = self._call_sync("GetLastPerformance")
+        if result is None:
+            return None
+        try:
+            import json
+
+            raw = result.unpack()[0] if result.n_children() > 0 else result.unpack()
+            if isinstance(raw, str) and raw:
+                return json.loads(raw)
+            return {}
+        except Exception as exc:
+            logger.error("Failed to unpack GetLastPerformance result: %s", exc)
+            return None
+
     # --- Model -----------------------------------------------------------
 
     def switch_model(self, model_name: str, callback: Optional[Callable] = None) -> None:

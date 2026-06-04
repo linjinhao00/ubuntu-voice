@@ -182,6 +182,13 @@ class ByteCLIDBusService(dbus.service.Object):
         return json.dumps(self._config.config, ensure_ascii=False)
 
     @dbus.service.method(
+        DBUS_INTERFACE, in_signature="", out_signature="s"
+    )
+    def GetLastPerformance(self) -> str:
+        """Return the latest transcription performance metrics as JSON."""
+        return self._engine.last_metrics_json()
+
+    @dbus.service.method(
         DBUS_INTERFACE, in_signature="s", out_signature="b"
     )
     def SaveConfig(self, config_json: str) -> bool:
