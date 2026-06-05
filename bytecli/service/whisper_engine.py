@@ -18,6 +18,8 @@ import os
 import tempfile
 import threading
 import time
+import uuid
+import urllib.error
 import urllib.request
 import wave
 from dataclasses import asdict, dataclass
@@ -26,6 +28,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from bytecli.constants import (
+    CONFIG_FILE,
     INFERENCE_PROFILES,
     LEGACY_WHISPER_MODELS,
     MODEL_DIR,
@@ -156,6 +159,8 @@ class WhisperEngine:
                 model = self._load_qwen_asr(profile, normalized_device)
             elif backend == "glm_asr":
                 model = self._load_glm_asr(profile, normalized_device)
+            elif backend == "remote_asr":
+                model = self._load_remote_asr(profile, normalized_device)
             else:
                 raise RuntimeError(f"Unsupported ASR backend '{backend}'.")
         except torch_cuda_oom_error():
@@ -347,6 +352,8 @@ class WhisperEngine:
                     text = self._transcribe_qwen_asr(preprocess.audio)
                 elif backend == "glm_asr":
                     text = self._transcribe_glm_asr(preprocess.audio)
+                elif backend == "remote_asr":
+                    text = self._transcribe_remote_asr(preprocess.audio)
                 else:
                     raise RuntimeError(f"Unsupported ASR backend '{backend}'.")
             except Exception as exc:
@@ -598,6 +605,32 @@ class WhisperEngine:
         )
         return {"processor": processor, "model": model, "device": device_map, "dtype": dtype}
 
+    def _load_remote_asr(self, profile: dict[str, Any], device: str) -> dict[str, Any]:
+        config = _load_remote_asr_config()
+        endpoint = str(config.get("endpoint") or profile.get("endpoint") or "").strip()
+        if not endpoint:
+            raise RuntimeError("Remote ASR endpoint is not configured.")
+
+        token = str(
+            os.environ.get("BYTECLI_REMOTE_ASR_TOKEN")
+            or config.get("api_token")
+            or ""
+        )
+        if not token:
+            logger.warning(
+                "Remote ASR token is not configured. Set BYTECLI_REMOTE_ASR_TOKEN "
+                "or remote_asr.api_token in %s before transcribing.",
+                CONFIG_FILE,
+            )
+
+        return {
+            "endpoint": endpoint,
+            "token": token,
+            "timeout_seconds": float(config.get("timeout_seconds") or 5.0),
+            "remote_backend": str(profile.get("remote_backend", "")),
+            "model": str(profile.get("model", "")),
+        }
+
     def _transcribe_faster_whisper(self, audio: np.ndarray, duration_s: float) -> str:
         vad_filter = duration_s > SHORT_AUDIO_SECONDS
         segments, _info = self._model.transcribe(
@@ -704,6 +737,65 @@ class WhisperEngine:
         decoded = processor.batch_decode(outputs[:, input_len:], skip_special_tokens=True)
         return str(decoded[0]).strip() if decoded else ""
 
+    def _transcribe_remote_asr(self, audio: np.ndarray) -> str:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+            _write_wav(tmp.name, audio)
+            with open(tmp.name, "rb") as fh:
+                wav_bytes = fh.read()
+
+        fields = {
+            "response_format": "json",
+            "backend": str(self._model.get("remote_backend", "")),
+            "model": str(self._model.get("model", "")),
+        }
+        body, content_type = _build_multipart_body(
+            fields=fields,
+            files={
+                "file": ("recording.wav", wav_bytes, "audio/wav"),
+            },
+        )
+        headers = {
+            "Content-Type": content_type,
+            "User-Agent": "bytecli-remote-asr/1.1.0",
+        }
+        token = str(self._model.get("token") or "")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        request = urllib.request.Request(
+            str(self._model["endpoint"]),
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        timeout = float(self._model.get("timeout_seconds") or 5.0)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = response.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Remote ASR HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Remote ASR request failed: {exc.reason}") from exc
+
+        try:
+            result = json.loads(payload.decode("utf-8"))
+        except json.JSONDecodeError:
+            return payload.decode("utf-8", errors="replace").strip()
+
+        if isinstance(result, dict):
+            response_backend = result.get("backend")
+            requested_backend = self._model.get("remote_backend")
+            if response_backend and requested_backend and response_backend != requested_backend:
+                logger.warning(
+                    "Remote ASR returned backend=%s while profile requested %s. "
+                    "The server may not support per-request backend switching.",
+                    response_backend,
+                    requested_backend,
+                )
+            return str(result.get("text", "")).strip()
+        return _extract_text(result)
+
     def _reset_peak_vram(self) -> None:
         if self._normalize_device(self._current_device or "cpu") != "cuda":
             return
@@ -778,6 +870,64 @@ def _huggingface_cache_roots() -> list[str]:
 
     roots.append(os.path.expanduser("~/.cache/huggingface/hub"))
     return _dedupe_preserving_order(roots)
+
+
+def _load_remote_asr_config() -> dict[str, Any]:
+    config = {
+        "endpoint": os.environ.get("BYTECLI_REMOTE_ASR_ENDPOINT", ""),
+        "api_token": os.environ.get("BYTECLI_REMOTE_ASR_TOKEN", ""),
+        "timeout_seconds": float(os.environ.get("BYTECLI_REMOTE_ASR_TIMEOUT", "5.0")),
+    }
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return config
+
+    remote = data.get("remote_asr")
+    if isinstance(remote, dict):
+        if remote.get("endpoint"):
+            config["endpoint"] = remote["endpoint"]
+        if remote.get("api_token"):
+            config["api_token"] = remote["api_token"]
+        if remote.get("timeout_seconds"):
+            config["timeout_seconds"] = remote["timeout_seconds"]
+    return config
+
+
+def _build_multipart_body(
+    fields: dict[str, str],
+    files: dict[str, tuple[str, bytes, str]],
+) -> tuple[bytes, str]:
+    boundary = f"----ByteCLI{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+
+    for name, value in fields.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("ascii"),
+                str(value).encode("utf-8"),
+                b"\r\n",
+            ]
+        )
+
+    for name, (filename, content, content_type) in files.items():
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                (
+                    f'Content-Disposition: form-data; name="{name}"; '
+                    f'filename="{filename}"\r\n'
+                ).encode("ascii"),
+                f"Content-Type: {content_type}\r\n\r\n".encode("ascii"),
+                content,
+                b"\r\n",
+            ]
+        )
+
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
 def _dedupe_preserving_order(values: list[str]) -> list[str]:

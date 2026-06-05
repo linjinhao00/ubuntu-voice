@@ -59,6 +59,15 @@ class ModelSelectionSection(Gtk.Box):
             "zh_fast": ("model.zh_fast", "model.zh_fast_desc"),
             "fun_asr_nano": ("model.fun_asr_nano", "model.fun_asr_nano_desc"),
             "experimental_qwen": ("model.qwen", "model.qwen_desc"),
+            "remote_glm_low_volume": (
+                "model.remote_glm",
+                "model.remote_glm_desc",
+            ),
+            "remote_qwen_1_7b": ("model.remote_qwen", "model.remote_qwen_desc"),
+            "remote_fun_asr_nano": (
+                "model.remote_fun_asr",
+                "model.remote_fun_asr_desc",
+            ),
         }
 
         self._radios: dict[str, RadioOption] = {}
@@ -243,6 +252,15 @@ class ModelSelectionSection(Gtk.Box):
             "zh_fast": ("model.zh_fast", "model.zh_fast_desc"),
             "fun_asr_nano": ("model.fun_asr_nano", "model.fun_asr_nano_desc"),
             "experimental_qwen": ("model.qwen", "model.qwen_desc"),
+            "remote_glm_low_volume": (
+                "model.remote_glm",
+                "model.remote_glm_desc",
+            ),
+            "remote_qwen_1_7b": ("model.remote_qwen", "model.remote_qwen_desc"),
+            "remote_fun_asr_nano": (
+                "model.remote_fun_asr",
+                "model.remote_fun_asr_desc",
+            ),
         }
         for key, radio in self._radios.items():
             meta = INFERENCE_PROFILES[key]

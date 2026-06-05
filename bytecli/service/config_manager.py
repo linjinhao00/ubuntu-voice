@@ -78,11 +78,15 @@ class ConfigManager:
         # Merge loaded data onto defaults so new keys are always present.
         merged = self.get_default_config()
         merged.update(data)
-        # Ensure nested dicts (hotkey) are merged properly.
+        # Ensure nested dicts are merged properly.
         if "hotkey" in data and isinstance(data["hotkey"], dict):
             default_hotkey = self.get_default_config()["hotkey"]
             default_hotkey.update(data["hotkey"])
             merged["hotkey"] = default_hotkey
+        if "remote_asr" in data and isinstance(data["remote_asr"], dict):
+            default_remote = self.get_default_config()["remote_asr"]
+            default_remote.update(data["remote_asr"])
+            merged["remote_asr"] = default_remote
 
         errors = self.validate(merged)
         if errors:
@@ -171,6 +175,23 @@ class ConfigManager:
         hme = config_dict.get("history_max_entries")
         if not isinstance(hme, int) or not (1 <= hme <= 500):
             errors.append("history_max_entries")
+
+        remote = config_dict.get("remote_asr")
+        if not isinstance(remote, dict):
+            errors.append("remote_asr")
+        else:
+            endpoint = remote.get("endpoint")
+            if not isinstance(endpoint, str) or not endpoint.startswith(("http://", "https://")):
+                errors.append("remote_asr.endpoint")
+            token = remote.get("api_token")
+            if token is not None and not isinstance(token, str):
+                errors.append("remote_asr.api_token")
+            timeout = remote.get("timeout_seconds")
+            if not isinstance(timeout, (int, float)) or not (0.5 <= float(timeout) <= 60):
+                errors.append("remote_asr.timeout_seconds")
+            fallback = remote.get("fallback_model")
+            if fallback is not None and fallback not in WHISPER_MODELS:
+                errors.append("remote_asr.fallback_model")
 
         return errors
 

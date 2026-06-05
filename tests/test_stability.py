@@ -64,6 +64,32 @@ class TestConfigManager:
         finally:
             importlib.reload(constants)
 
+    def test_remote_profile_set_limits_visible_models(self, monkeypatch):
+        import importlib
+        import bytecli.constants as constants
+
+        real_find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name: object()
+            if name in {"funasr", "torchaudio"}
+            else real_find_spec(name),
+        )
+        monkeypatch.setenv("BYTECLI_PROFILE_SET", "remote")
+        reloaded = importlib.reload(constants)
+        try:
+            assert reloaded.DEFAULT_CONFIG["model"] == "remote_glm_low_volume"
+            assert reloaded.VISIBLE_INFERENCE_PROFILES == (
+                "remote_glm_low_volume",
+                "remote_qwen_1_7b",
+                "remote_fun_asr_nano",
+                "fun_asr_nano",
+            )
+        finally:
+            monkeypatch.delenv("BYTECLI_PROFILE_SET", raising=False)
+            importlib.reload(constants)
+
     def test_save_and_reload(self, tmp_path):
         mgr = self._make_manager(str(tmp_path))
         mgr.load()
@@ -128,6 +154,21 @@ class TestConfigManager:
         bad["hotkey"] = {"keys": ["A"]}  # Single non-function key
         errors = mgr.validate(bad)
         assert "hotkey.keys" in errors
+
+    def test_validate_remote_asr_config(self, tmp_path):
+        mgr = self._make_manager(str(tmp_path))
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config["model"] = "remote_glm_low_volume"
+        config["remote_asr"] = {
+            "endpoint": "https://asr.example.test/v1/audio/transcriptions",
+            "api_token": "secret",
+            "timeout_seconds": 5.0,
+            "fallback_model": "fun_asr_nano",
+        }
+        assert mgr.validate(config) == []
+
+        config["remote_asr"]["endpoint"] = "not-a-url"
+        assert "remote_asr.endpoint" in mgr.validate(config)
 
     def test_validate_single_function_key_hotkey(self, tmp_path):
         mgr = self._make_manager(str(tmp_path))
@@ -1026,6 +1067,66 @@ class TestWhisperEngine:
                 sys.modules["funasr"] = old_funasr
             else:
                 del sys.modules["funasr"]
+
+    def test_remote_asr_profile_posts_audio_and_records_metrics(self, monkeypatch):
+        from bytecli.service import audio_preprocess
+        from bytecli.service.whisper_engine import WhisperEngine
+        import bytecli.service.whisper_engine as whisper_engine
+        import numpy as np
+
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "text": "远端 GLM",
+                        "backend": "glm_asr",
+                        "inference_seconds": 1.2,
+                        "total_seconds": 1.3,
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            captured["body"] = request.data
+            captured["headers"] = dict(request.header_items())
+            return FakeResponse()
+
+        old_detect = audio_preprocess.detect_speech_ratio
+        audio_preprocess.detect_speech_ratio = lambda audio: (None, "energy")
+        monkeypatch.setenv(
+            "BYTECLI_REMOTE_ASR_ENDPOINT",
+            "https://asr.example.test/v1/audio/transcriptions",
+        )
+        monkeypatch.setenv("BYTECLI_REMOTE_ASR_TOKEN", "test-token")
+        monkeypatch.setenv("BYTECLI_REMOTE_ASR_TIMEOUT", "7.5")
+        monkeypatch.setattr(whisper_engine.urllib.request, "urlopen", fake_urlopen)
+        try:
+            engine = WhisperEngine()
+            engine.load_model("remote_glm_low_volume", "gpu")
+            text = engine.transcribe(np.ones(16000, dtype=np.float32) * 0.05)
+        finally:
+            audio_preprocess.detect_speech_ratio = old_detect
+
+        assert text == "远端 GLM"
+        assert captured["timeout"] == 7.5
+        assert captured["request"].full_url == (
+            "https://asr.example.test/v1/audio/transcriptions"
+        )
+        assert captured["headers"]["Authorization"] == "Bearer test-token"
+        assert b"backend" in captured["body"]
+        assert b"glm_asr" in captured["body"]
+        assert b"recording.wav" in captured["body"]
+        assert engine.last_metrics["backend"] == "remote_asr"
+        assert engine.last_metrics["profile"] == "remote_glm_low_volume"
 
     def test_qwen_hallucination_phrase_is_blocked(self):
         from bytecli.service import audio_preprocess

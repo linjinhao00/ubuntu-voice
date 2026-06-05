@@ -12,8 +12,18 @@ import importlib.util
 # ---------------------------------------------------------------------------
 # Filesystem paths
 # ---------------------------------------------------------------------------
-CONFIG_DIR: str = os.path.join(os.path.expanduser("~"), ".config", "bytecli")
-DATA_DIR: str = os.path.join(os.path.expanduser("~"), ".local", "share", "bytecli")
+CONFIG_DIR: str = os.path.expanduser(
+    os.environ.get(
+        "BYTECLI_CONFIG_DIR",
+        os.path.join(os.path.expanduser("~"), ".config", "bytecli"),
+    )
+)
+DATA_DIR: str = os.path.expanduser(
+    os.environ.get(
+        "BYTECLI_DATA_DIR",
+        os.path.join(os.path.expanduser("~"), ".local", "share", "bytecli"),
+    )
+)
 
 CONFIG_FILE: str = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_FILE: str = os.path.join(DATA_DIR, "history.json")
@@ -22,8 +32,14 @@ MODEL_DIR: str = os.path.join(DATA_DIR, "models")
 EVAL_DIR: str = os.path.join(DATA_DIR, "eval")
 
 _UID: str = str(os.getuid())
-PID_FILE: str = os.path.join("/run", "user", _UID, "bytecli.pid")
-INDICATOR_PID_FILE: str = os.path.join("/run", "user", _UID, "bytecli-indicator.pid")
+_RUNTIME_NAME: str = os.environ.get("BYTECLI_RUNTIME_NAME", "bytecli")
+PID_FILE: str = os.path.join("/run", "user", _UID, f"{_RUNTIME_NAME}.pid")
+INDICATOR_PID_FILE: str = os.path.join(
+    "/run",
+    "user",
+    _UID,
+    f"{_RUNTIME_NAME}-indicator.pid",
+)
 
 # ---------------------------------------------------------------------------
 # D-Bus identifiers
@@ -87,7 +103,44 @@ def _funasr_runtime_available() -> bool:
     return _dependency_available("funasr") and _dependency_available("torchaudio")
 
 
+_REMOTE_ASR_ENDPOINT = os.environ.get(
+    "BYTECLI_REMOTE_ASR_ENDPOINT",
+    "https://asr.linjh-personal.top/v1/audio/transcriptions",
+)
+_PROFILE_SET = os.environ.get("BYTECLI_PROFILE_SET", "").strip().lower()
+
+
 INFERENCE_PROFILES: dict[str, dict[str, object]] = {
+    "remote_glm_low_volume": {
+        "display_name": "Remote GLM Low Volume",
+        "description": "Home server GLM-ASR-Nano over HTTPS",
+        "backend": "remote_asr",
+        "remote_backend": "glm_asr",
+        "model": "zai-org/GLM-ASR-Nano-2512",
+        "endpoint": _REMOTE_ASR_ENDPOINT,
+        "compute_type": "bfloat16",
+        "visible": True,
+    },
+    "remote_qwen_1_7b": {
+        "display_name": "Remote Qwen 1.7B",
+        "description": "Home server Qwen3-ASR-1.7B over HTTPS",
+        "backend": "remote_asr",
+        "remote_backend": "qwen_asr",
+        "model": "Qwen/Qwen3-ASR-1.7B",
+        "endpoint": _REMOTE_ASR_ENDPOINT,
+        "compute_type": "bfloat16",
+        "visible": True,
+    },
+    "remote_fun_asr_nano": {
+        "display_name": "Remote Fun-ASR Nano",
+        "description": "Home server Fun-ASR-Nano over HTTPS",
+        "backend": "remote_asr",
+        "remote_backend": "fun_asr",
+        "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+        "endpoint": _REMOTE_ASR_ENDPOINT,
+        "compute_type": "bfloat16",
+        "visible": True,
+    },
     "fast": {
         "display_name": "Fast",
         "description": "faster-whisper small int8_float16, beam=1",
@@ -154,12 +207,23 @@ INFERENCE_PROFILES: dict[str, dict[str, object]] = {
 }
 
 INFERENCE_PROFILE_ORDER: tuple[str, ...] = (
-    "zh_fast",
+    "remote_glm_low_volume",
+    "remote_qwen_1_7b",
+    "remote_fun_asr_nano",
     "fun_asr_nano",
+    "zh_fast",
     "experimental_qwen",
     "fast",
     "balanced",
 )
+
+if _PROFILE_SET == "remote":
+    INFERENCE_PROFILE_ORDER = (
+        "remote_glm_low_volume",
+        "remote_qwen_1_7b",
+        "remote_fun_asr_nano",
+        "fun_asr_nano",
+    )
 
 VISIBLE_INFERENCE_PROFILES: tuple[str, ...] = tuple(
     key
@@ -199,7 +263,7 @@ WHISPER_MODELS: dict[str, dict[str, str]] = {
 # Default configuration
 # ---------------------------------------------------------------------------
 DEFAULT_CONFIG: dict = {
-    "model": "fast",
+    "model": "remote_glm_low_volume" if _PROFILE_SET == "remote" else "fast",
     "device": "gpu",
     "audio_input": "auto",
     "hotkey": {
@@ -208,4 +272,10 @@ DEFAULT_CONFIG: dict = {
     "language": "en",
     "auto_start": False,
     "history_max_entries": 50,
+    "remote_asr": {
+        "endpoint": _REMOTE_ASR_ENDPOINT,
+        "api_token": "",
+        "timeout_seconds": 5.0,
+        "fallback_model": "fun_asr_nano",
+    },
 }
