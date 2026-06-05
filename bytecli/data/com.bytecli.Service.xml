@@ -81,6 +81,8 @@
       <arg name="transcription" type="s"/>
     </signal>
 
+    <signal name="TranscriptionStarted"/>
+
     <signal name="ModelDownloadProgress">
       <arg name="percent" type="i"/>
       <arg name="message" type="s"/>

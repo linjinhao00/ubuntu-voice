@@ -73,18 +73,20 @@ class TestConfigManager:
             importlib.util,
             "find_spec",
             lambda name: object()
-            if name in {"funasr", "torchaudio"}
+            if name in {"funasr", "torchaudio", "qwen_asr"}
             else real_find_spec(name),
         )
         monkeypatch.setenv("BYTECLI_PROFILE_SET", "remote")
         reloaded = importlib.reload(constants)
         try:
-            assert reloaded.DEFAULT_CONFIG["model"] == "remote_glm_low_volume"
+            assert reloaded.DEFAULT_CONFIG["model"] == "experimental_qwen"
             assert reloaded.VISIBLE_INFERENCE_PROFILES == (
-                "remote_glm_low_volume",
-                "remote_qwen_1_7b",
-                "remote_fun_asr_nano",
+                "experimental_qwen",
                 "fun_asr_nano",
+            )
+            assert tuple(reloaded.WHISPER_MODELS) == (
+                "fun_asr_nano",
+                "experimental_qwen",
             )
         finally:
             monkeypatch.delenv("BYTECLI_PROFILE_SET", raising=False)
@@ -169,6 +171,24 @@ class TestConfigManager:
 
         config["remote_asr"]["endpoint"] = "not-a-url"
         assert "remote_asr.endpoint" in mgr.validate(config)
+
+    def test_validate_text_correction_config(self, tmp_path):
+        mgr = self._make_manager(str(tmp_path))
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config["text_correction"] = {
+            "enabled": True,
+            "backend": "qwen",
+            "model": "Qwen/Qwen3-0.6B",
+            "device": "auto",
+            "max_chars": 120,
+            "max_new_tokens": 80,
+            "local_files_only": True,
+            "min_free_vram_mb": 1200,
+        }
+        assert mgr.validate(config) == []
+
+        config["text_correction"]["backend"] = "remote"
+        assert "text_correction.backend" in mgr.validate(config)
 
     def test_validate_single_function_key_hotkey(self, tmp_path):
         mgr = self._make_manager(str(tmp_path))
@@ -805,6 +825,42 @@ class TestRecordingFSM:
         # Should be TRANSCRIBING (submitted to thread pool).
         assert fsm.state is RecordingState.TRANSCRIBING
 
+    def test_stop_recording_emits_transcription_started(self):
+        import numpy as np
+
+        audio = MagicMock()
+        engine = MagicMock()
+        history = MagicMock()
+        sig_started = MagicMock()
+        sig_stopped = MagicMock()
+        sig_transcription_started = MagicMock()
+        config_mgr = MagicMock()
+        config_mgr.config = {"audio_input": "auto"}
+        audio.stop_recording.return_value = np.array(
+            [0.1, 0.2, 0.3], dtype=np.float32
+        )
+        engine.transcribe.return_value = "hello world"
+        engine.current_model = "small"
+
+        fsm = RecordingFSM(
+            audio_manager=audio,
+            whisper_engine=engine,
+            history_manager=history,
+            dbus_recording_started_signal=sig_started,
+            dbus_recording_stopped_signal=sig_stopped,
+            config_manager=config_mgr,
+            dbus_transcription_started_signal=sig_transcription_started,
+        )
+
+        fsm.on_hotkey_toggle()
+        time.sleep(0.4)
+        fsm.on_hotkey_toggle()
+
+        assert fsm.state is RecordingState.TRANSCRIBING
+        sig_transcription_started.assert_called_once_with()
+        sig_stopped.assert_not_called()
+        fsm.shutdown()
+
     def test_short_press_discarded(self):
         fsm, audio, engine, *_ = self._make_fsm()
         fsm.on_hotkey_toggle()  # Start
@@ -954,6 +1010,7 @@ class TestWhisperEngine:
     def test_qwen_profile_transcribes_and_records_metrics(self):
         from bytecli.service.whisper_engine import WhisperEngine
         import numpy as np
+        import os
         import sys
 
         captured = {}
@@ -974,8 +1031,10 @@ class TestWhisperEngine:
         )
         old_torch = sys.modules.get("torch")
         old_qwen_asr = sys.modules.get("qwen_asr")
+        old_qwen_context = os.environ.get("BYTECLI_QWEN_ASR_CONTEXT")
         sys.modules["torch"] = fake_torch
         sys.modules["qwen_asr"] = types.SimpleNamespace(Qwen3ASRModel=FakeQwen3ASRModel)
+        os.environ.pop("BYTECLI_QWEN_ASR_CONTEXT", None)
         try:
             engine = WhisperEngine()
             engine.load_model("experimental_qwen", "gpu")
@@ -992,7 +1051,12 @@ class TestWhisperEngine:
             audio_arg, sample_rate = transcribe_kwargs["audio"]
             assert sample_rate == 16000
             assert audio_arg.dtype == np.float32
-            assert "context" not in transcribe_kwargs
+            assert "context" in transcribe_kwargs
+            assert "API" in transcribe_kwargs["context"]
+            assert "Python" in transcribe_kwargs["context"]
+            assert "中文内容保持中文" in transcribe_kwargs["context"]
+            assert "不要翻译成英文" in transcribe_kwargs["context"]
+            assert "不要翻译成中文" in transcribe_kwargs["context"]
             assert transcribe_kwargs["language"] is None
             assert transcribe_kwargs["return_time_stamps"] is False
             assert engine.last_metrics["backend"] == "qwen_asr"
@@ -1006,6 +1070,10 @@ class TestWhisperEngine:
                 sys.modules["qwen_asr"] = old_qwen_asr
             else:
                 del sys.modules["qwen_asr"]
+            if old_qwen_context is None:
+                os.environ.pop("BYTECLI_QWEN_ASR_CONTEXT", None)
+            else:
+                os.environ["BYTECLI_QWEN_ASR_CONTEXT"] = old_qwen_context
 
     def test_fun_asr_nano_profile_transcribes_and_records_metrics(self):
         from bytecli.service import audio_preprocess
@@ -1034,8 +1102,10 @@ class TestWhisperEngine:
         old_funasr = sys.modules.get("funasr")
         old_detect = audio_preprocess.detect_speech_ratio
         old_model_dir = os.environ.get("BYTECLI_FUN_ASR_MODEL_DIR")
+        old_language = os.environ.get("BYTECLI_FUN_ASR_LANGUAGE")
         sys.modules["funasr"] = types.SimpleNamespace(AutoModel=FakeAutoModel)
         audio_preprocess.detect_speech_ratio = lambda audio: (None, "energy")
+        os.environ.pop("BYTECLI_FUN_ASR_LANGUAGE", None)
         try:
             with tempfile.TemporaryDirectory() as model_dir:
                 os.environ["BYTECLI_FUN_ASR_MODEL_DIR"] = model_dir
@@ -1051,7 +1121,7 @@ class TestWhisperEngine:
             assert captured["load_kwargs"]["disable_update"] is True
             assert captured["load_kwargs"]["disable_pbar"] is True
             assert captured["generate_kwargs"]["batch_size"] == 1
-            assert captured["generate_kwargs"]["language"] == "中文"
+            assert captured["generate_kwargs"]["language"] == "auto"
             assert captured["generate_kwargs"]["itn"] is True
             assert captured["generate_kwargs"]["disable_pbar"] is True
             assert captured["generate_kwargs"]["input"][0].endswith(".wav")
@@ -1063,6 +1133,10 @@ class TestWhisperEngine:
                 os.environ.pop("BYTECLI_FUN_ASR_MODEL_DIR", None)
             else:
                 os.environ["BYTECLI_FUN_ASR_MODEL_DIR"] = old_model_dir
+            if old_language is None:
+                os.environ.pop("BYTECLI_FUN_ASR_LANGUAGE", None)
+            else:
+                os.environ["BYTECLI_FUN_ASR_LANGUAGE"] = old_language
             if old_funasr is not None:
                 sys.modules["funasr"] = old_funasr
             else:
@@ -1197,6 +1271,41 @@ class TestWhisperEngine:
         assert _collapse_repeats("") == ""
         assert _collapse_repeats("aaa") == "aaa"  # Exactly 3 is OK
         assert _collapse_repeats("aaaa") == "aaa"  # 4 collapses to 3
+
+    def test_transcript_cleanup_removes_fillers_and_corrects_common_errors(self):
+        from bytecli.service.transcript_cleanup import cleanup_transcript
+
+        result = cleanup_transcript("嗯就是, 帮我重新再打一个炮, 非常小的生意")
+
+        assert result.text == "帮我重新打一个包，非常小的声音"
+        assert result.changed is True
+        assert result.elapsed_ms < 5.0
+
+    def test_transcript_cleanup_preserves_intentional_middle_words(self):
+        from bytecli.service.transcript_cleanup import cleanup_transcript
+
+        result = cleanup_transcript("先打开设置，然后切换到 Qwen")
+
+        assert result.text == "先打开设置，然后切换到 Qwen"
+
+    def test_transcript_cleanup_uses_qwen_when_ready(self, monkeypatch):
+        from bytecli.service import transcript_cleanup
+        from bytecli.service.transcript_cleanup import (
+            TextCorrectionSettings,
+            cleanup_transcript,
+        )
+
+        class FakeCorrector:
+            def correct_if_ready(self, text, settings):
+                return "帮我重新打一个包"
+
+        monkeypatch.setattr(transcript_cleanup, "_CORRECTOR", FakeCorrector())
+        settings = TextCorrectionSettings(backend="qwen")
+
+        result = cleanup_transcript("帮我重新打一个炮", settings=settings)
+
+        assert result.text == "帮我重新打一个包"
+        assert result.backend == "qwen"
 
     def test_low_volume_audio_preprocessor_normalizes_without_skipping(self):
         from bytecli.service import audio_preprocess

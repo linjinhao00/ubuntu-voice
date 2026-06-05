@@ -182,7 +182,7 @@ INFERENCE_PROFILES: dict[str, dict[str, object]] = {
         "backend": "funasr_nano",
         "model": "FunAudioLLM/Fun-ASR-Nano-2512",
         "compute_type": "bfloat16",
-        "language": "中文",
+        "language": "auto",
         "visible": _funasr_runtime_available(),
     },
     "experimental_qwen": {
@@ -219,11 +219,14 @@ INFERENCE_PROFILE_ORDER: tuple[str, ...] = (
 
 if _PROFILE_SET == "remote":
     INFERENCE_PROFILE_ORDER = (
-        "remote_glm_low_volume",
-        "remote_qwen_1_7b",
-        "remote_fun_asr_nano",
+        "experimental_qwen",
         "fun_asr_nano",
     )
+    for _profile_key, _profile in INFERENCE_PROFILES.items():
+        _profile["visible"] = (
+            _profile_key in INFERENCE_PROFILE_ORDER
+            and bool(_profile.get("visible"))
+        )
 
 VISIBLE_INFERENCE_PROFILES: tuple[str, ...] = tuple(
     key
@@ -248,6 +251,12 @@ LEGACY_WHISPER_MODELS: dict[str, dict[str, str]] = {
     },
 }
 
+_ALLOWED_PROFILE_KEYS = (
+    set(INFERENCE_PROFILE_ORDER)
+    if _PROFILE_SET == "remote"
+    else set(INFERENCE_PROFILES)
+)
+
 WHISPER_MODELS: dict[str, dict[str, str]] = {
     **{
         key: {
@@ -255,15 +264,16 @@ WHISPER_MODELS: dict[str, dict[str, str]] = {
             "size": str(value["description"]),
         }
         for key, value in INFERENCE_PROFILES.items()
+        if key in _ALLOWED_PROFILE_KEYS
     },
-    **LEGACY_WHISPER_MODELS,
+    **({} if _PROFILE_SET == "remote" else LEGACY_WHISPER_MODELS),
 }
 
 # ---------------------------------------------------------------------------
 # Default configuration
 # ---------------------------------------------------------------------------
 DEFAULT_CONFIG: dict = {
-    "model": "remote_glm_low_volume" if _PROFILE_SET == "remote" else "fast",
+    "model": "experimental_qwen" if _PROFILE_SET == "remote" else "fast",
     "device": "gpu",
     "audio_input": "auto",
     "hotkey": {
@@ -277,5 +287,15 @@ DEFAULT_CONFIG: dict = {
         "api_token": "",
         "timeout_seconds": 5.0,
         "fallback_model": "fun_asr_nano",
+    },
+    "text_correction": {
+        "enabled": True,
+        "backend": "qwen" if _PROFILE_SET == "remote" else "rules",
+        "model": "Qwen/Qwen3-0.6B",
+        "device": "auto",
+        "max_chars": 120,
+        "max_new_tokens": 80,
+        "local_files_only": True,
+        "min_free_vram_mb": 1200,
     },
 }

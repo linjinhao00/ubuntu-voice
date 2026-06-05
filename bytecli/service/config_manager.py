@@ -87,6 +87,10 @@ class ConfigManager:
             default_remote = self.get_default_config()["remote_asr"]
             default_remote.update(data["remote_asr"])
             merged["remote_asr"] = default_remote
+        if "text_correction" in data and isinstance(data["text_correction"], dict):
+            default_correction = self.get_default_config()["text_correction"]
+            default_correction.update(data["text_correction"])
+            merged["text_correction"] = default_correction
 
         errors = self.validate(merged)
         if errors:
@@ -192,6 +196,31 @@ class ConfigManager:
             fallback = remote.get("fallback_model")
             if fallback is not None and fallback not in WHISPER_MODELS:
                 errors.append("remote_asr.fallback_model")
+
+        correction = config_dict.get("text_correction")
+        if not isinstance(correction, dict):
+            errors.append("text_correction")
+        else:
+            if not isinstance(correction.get("enabled"), bool):
+                errors.append("text_correction.enabled")
+            if correction.get("backend") not in ("rules", "qwen", "off"):
+                errors.append("text_correction.backend")
+            model = correction.get("model")
+            if not isinstance(model, str) or not model.strip():
+                errors.append("text_correction.model")
+            if correction.get("device") not in ("auto", "gpu", "cuda", "cpu"):
+                errors.append("text_correction.device")
+            max_chars = correction.get("max_chars")
+            if not isinstance(max_chars, int) or not (20 <= max_chars <= 1000):
+                errors.append("text_correction.max_chars")
+            max_new_tokens = correction.get("max_new_tokens")
+            if not isinstance(max_new_tokens, int) or not (8 <= max_new_tokens <= 256):
+                errors.append("text_correction.max_new_tokens")
+            if not isinstance(correction.get("local_files_only"), bool):
+                errors.append("text_correction.local_files_only")
+            min_free = correction.get("min_free_vram_mb")
+            if not isinstance(min_free, int) or not (0 <= min_free <= 8192):
+                errors.append("text_correction.min_free_vram_mb")
 
         return errors
 

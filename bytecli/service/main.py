@@ -185,6 +185,7 @@ def main() -> None:
             dbus_recording_started_signal=dbus_service.RecordingStarted,
             dbus_recording_stopped_signal=dbus_service.RecordingStopped,
             config_manager=config_manager,
+            dbus_transcription_started_signal=dbus_service.TranscriptionStarted,
         )
 
         hotkey_manager.on_press(recording_fsm.on_hotkey_toggle)

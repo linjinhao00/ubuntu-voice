@@ -50,6 +50,8 @@ class RecordingFSM:
     dbus_recording_stopped_signal:
         Callable accepting a single ``str`` argument that emits the
         ``RecordingStopped(text)`` D-Bus signal.
+    dbus_transcription_started_signal:
+        Callable (no args) that emits the ``TranscriptionStarted`` D-Bus signal.
     config_manager:
         Used to read the current ``audio_input`` device identifier.
     """
@@ -62,12 +64,14 @@ class RecordingFSM:
         dbus_recording_started_signal: Callable[[], None],
         dbus_recording_stopped_signal: Callable[[str], None],
         config_manager: "ConfigManager",
+        dbus_transcription_started_signal: Optional[Callable[[], None]] = None,
     ) -> None:
         self._audio = audio_manager
         self._engine = whisper_engine
         self._history = history_manager
         self._sig_started = dbus_recording_started_signal
         self._sig_stopped = dbus_recording_stopped_signal
+        self._sig_transcription_started = dbus_transcription_started_signal
         self._config = config_manager
 
         self._state = RecordingState.IDLE
@@ -199,9 +203,9 @@ class RecordingFSM:
         self._state = RecordingState.TRANSCRIBING
         duration_ms = int(duration * 1000)
 
-        # The capture has ended now. Let the indicator leave recording state
-        # immediately instead of waiting for ASR inference to finish.
-        self._emit_stopped("")
+        # The capture has ended now. Switch the indicator into a distinct
+        # transcribing state instead of leaving it idle during ASR inference.
+        self._emit_transcription_started()
 
         logger.info(
             "Recording stopped (%.2f s). Submitting for transcription.", duration
@@ -300,3 +304,13 @@ class RecordingFSM:
             self._sig_stopped(text)
         except Exception:
             logger.debug("RecordingStopped signal emission failed.", exc_info=True)
+
+    def _emit_transcription_started(self) -> None:
+        """Safely emit the TranscriptionStarted signal."""
+        if self._sig_transcription_started is None:
+            self._emit_stopped("")
+            return
+        try:
+            self._sig_transcription_started()
+        except Exception:
+            logger.debug("TranscriptionStarted signal emission failed.", exc_info=True)

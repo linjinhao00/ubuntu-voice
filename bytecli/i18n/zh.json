@@ -63,6 +63,7 @@
   "startup.auto": "系统启动时自动运行",
   "indicator.idle": "空闲",
   "indicator.recording": "录音中",
+  "indicator.transcribing": "转录中...",
   "indicator.history": "历史记录",
   "indicator.history_count": "{n} 条记录",
   "indicator.history_empty": "暂无语音输入历史",

@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Profile keys in display order.
 _MODEL_ORDER = list(VISIBLE_INFERENCE_PROFILES)
+_DEFAULT_MODEL = _MODEL_ORDER[0] if _MODEL_ORDER else "fast"
 
 
 class ModelSelectionSection(Gtk.Box):
@@ -101,7 +102,7 @@ class ModelSelectionSection(Gtk.Box):
         # valid service fallbacks, but the settings UI presents profiles.
         initial_model = config.get("model", "fast")
         if initial_model not in self._radios:
-            initial_model = "fast"
+            initial_model = _DEFAULT_MODEL
             self._config["model"] = initial_model
         self._apply_selection(initial_model)
 
@@ -120,7 +121,7 @@ class ModelSelectionSection(Gtk.Box):
 
     def _apply_selection(self, model_key: str) -> None:
         if model_key not in self._radios:
-            model_key = "fast"
+            model_key = _DEFAULT_MODEL
         for key, radio in self._radios.items():
             radio.selected = key == model_key
 
@@ -238,7 +239,10 @@ class ModelSelectionSection(Gtk.Box):
         config["model"] = self._config.get("model", "fast")
 
     def apply_config(self, config: dict) -> None:
-        self._config["model"] = config.get("model", "fast")
+        model = config.get("model", _DEFAULT_MODEL)
+        if model not in self._radios:
+            model = _DEFAULT_MODEL
+        self._config["model"] = model
         self._pending_model = None
         self._apply_selection(self._config["model"])
 

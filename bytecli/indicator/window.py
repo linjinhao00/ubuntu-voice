@@ -42,8 +42,11 @@ class IndicatorWindow(Gtk.Window):
         self._dbus_client = dbus_client
         self._recording = False
         self._downloading = False
+        self._transcribing = False
+        self._pulse_on = False
         self._timer_seconds = 0
         self._timer_source_id: Optional[int] = None
+        self._pulse_source_id: Optional[int] = None
         self._leave_timeout_id: Optional[int] = None
         self._history_panel = None
         self._indicator_geo: tuple[int, int, int, int] = (0, 0, 220, 40)
@@ -145,6 +148,9 @@ class IndicatorWindow(Gtk.Window):
         """Draw a filled circle as the status dot."""
         if self._recording:
             cr.set_source_rgba(0.714, 1.0, 0.808, 1.0)  # #B6FFCE
+        elif self._transcribing:
+            alpha = 1.0 if self._pulse_on else 0.46
+            cr.set_source_rgba(0.698, 0.698, 1.0, alpha)  # #B2B2FF
         elif self._downloading:
             cr.set_source_rgba(1.0, 0.518, 0.0, 1.0)    # #FF8400 (warning orange)
         else:
@@ -310,16 +316,24 @@ class IndicatorWindow(Gtk.Window):
     def set_state_idle(self) -> None:
         self._recording = False
         self._downloading = False
+        self._transcribing = False
         self._stop_timer()
+        self._stop_pulse()
+        self._clear_state_classes()
         self._status_label.set_text(i18n.t("indicator.idle", fallback="Idle"))
         self._timer_label.set_visible(False)
         self._dot.queue_draw()
+        self._queue_reposition()
 
     def set_state_downloading(self, percent: int, message: str) -> None:
         """Show model download progress in the pill."""
         self._recording = False
         self._downloading = True
+        self._transcribing = False
         self._stop_timer()
+        self._stop_pulse()
+        self._clear_state_classes()
+        self._pill_box.add_css_class("indicator-pill-downloading")
 
         if percent < 0:
             # Error state.
@@ -331,15 +345,38 @@ class IndicatorWindow(Gtk.Window):
 
         self._timer_label.set_visible(False)
         self._dot.queue_draw()
+        self._queue_reposition()
 
     def set_state_recording(self) -> None:
         self._recording = True
+        self._downloading = False
+        self._transcribing = False
+        self._stop_pulse()
+        self._clear_state_classes()
+        self._pill_box.add_css_class("indicator-pill-recording")
         self._timer_seconds = 0
         self._timer_label.set_text("00:00")
         self._timer_label.set_visible(True)
         self._status_label.set_text(i18n.t("indicator.recording", fallback="Recording"))
         self._dot.queue_draw()
+        self._queue_reposition()
         self._start_timer()
+
+    def set_state_transcribing(self) -> None:
+        """Show the post-recording ASR inference state."""
+        self._recording = False
+        self._downloading = False
+        self._transcribing = True
+        self._stop_timer()
+        self._clear_state_classes()
+        self._pill_box.add_css_class("indicator-pill-transcribing")
+        self._timer_label.set_visible(False)
+        self._status_label.set_text(
+            i18n.t("indicator.transcribing", fallback="Transcribing...")
+        )
+        self._start_pulse()
+        self._dot.queue_draw()
+        self._queue_reposition()
 
     # ------------------------------------------------------------------
     # Timer
@@ -359,6 +396,36 @@ class IndicatorWindow(Gtk.Window):
         mins, secs = divmod(self._timer_seconds, 60)
         self._timer_label.set_text(f"{mins:02d}:{secs:02d}")
         return True  # keep ticking
+
+    def _start_pulse(self) -> None:
+        self._stop_pulse()
+        self._pulse_on = True
+        self._pulse_source_id = GLib.timeout_add(520, self._pulse)
+
+    def _stop_pulse(self) -> None:
+        if self._pulse_source_id is not None:
+            GLib.source_remove(self._pulse_source_id)
+            self._pulse_source_id = None
+        self._pulse_on = False
+
+    def _pulse(self) -> bool:
+        if not self._transcribing:
+            self._pulse_source_id = None
+            return False
+        self._pulse_on = not self._pulse_on
+        self._dot.queue_draw()
+        return True
+
+    def _clear_state_classes(self) -> None:
+        for css_class in (
+            "indicator-pill-recording",
+            "indicator-pill-transcribing",
+            "indicator-pill-downloading",
+        ):
+            self._pill_box.remove_css_class(css_class)
+
+    def _queue_reposition(self) -> None:
+        GLib.idle_add(self._position_on_screen)
 
 
 # ------------------------------------------------------------------

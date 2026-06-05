@@ -244,6 +244,11 @@ class ByteCLIDBusService(dbus.service.Object):
         """Emitted when recording ends.  *text* is the transcription result."""
         logger.debug("Signal RecordingStopped(%r)", text[:80] if text else "")
 
+    @dbus.service.signal(DBUS_INTERFACE, signature="")
+    def TranscriptionStarted(self) -> None:
+        """Emitted after recording capture ends and ASR inference begins."""
+        logger.debug("Signal TranscriptionStarted()")
+
     @dbus.service.signal(DBUS_INTERFACE, signature="is")
     def ModelDownloadProgress(self, percent: int, message: str) -> None:
         """Emitted during first-run model download with progress updates."""

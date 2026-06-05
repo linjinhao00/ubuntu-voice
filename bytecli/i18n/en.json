@@ -63,6 +63,7 @@
   "startup.auto": "Start automatically on system boot",
   "indicator.idle": "Idle",
   "indicator.recording": "Recording",
+  "indicator.transcribing": "Transcribing...",
   "indicator.history": "History",
   "indicator.history_count": "{n} entries",
   "indicator.history_empty": "No voice input history yet",

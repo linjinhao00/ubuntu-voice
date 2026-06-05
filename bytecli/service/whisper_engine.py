@@ -34,12 +34,28 @@ from bytecli.constants import (
     MODEL_DIR,
 )
 from bytecli.service.audio_preprocess import AudioPreprocessor, PreprocessResult
+from bytecli.service.transcript_cleanup import (
+    cleanup_enabled,
+    cleanup_transcript,
+    unload_text_corrector,
+    warm_up_text_corrector,
+)
 from bytecli.service.transcript_validation import validate_transcript
 
 logger = logging.getLogger(__name__)
 
 SHORT_AUDIO_SECONDS = 30.0
 SILENCE_RMS_THRESHOLD = 0.003
+DEFAULT_QWEN_ASR_CONTEXT = (
+    "请按音频中实际说出的语言逐字转写，不要翻译。中文内容保持中文，"
+    "不要翻译成英文；英文单词、英文缩写、代码词和产品名保持英文及原有大小写，"
+    "不要翻译成中文。音频可能是中文为主、夹杂英文技术词的口述。"
+    "常见技术词包括 API、SDK、CPU、GPU、CUDA、Python、JavaScript、"
+    "TypeScript、React、Vue、Node.js、Docker、Kubernetes、SSH、HTTP、"
+    "HTTPS、JSON、YAML、SQL、Git、GitHub、VS Code、Qwen、FunASR、"
+    "ByteCLI、Typeless、prompt、token、model、server、client、package、"
+    "benchmark、latency、local model、remote model。只输出转写文本。"
+)
 
 # Whisper model download URLs (from openai/whisper source).
 _WHISPER_MODEL_URLS: dict[str, str] = {
@@ -77,6 +93,9 @@ class TranscriptionMetrics:
     speech_detected: Optional[bool] = None
     hallucination_blocked: bool = False
     validation_reason: str = ""
+    cleanup_changed: bool = False
+    cleanup_ms: float = 0.0
+    cleanup_backend: str = "rules"
 
 
 class WhisperEngine:
@@ -133,9 +152,11 @@ class WhisperEngine:
             self._current_model = model_name
             self._current_device = device
             self._current_profile = profile
+            warm_up_text_corrector()
             logger.info("Activated cached ASR profile '%s' on '%s'.", model_name, device)
             return
 
+        unload_text_corrector()
         backend = str(profile["backend"])
         logger.info(
             "Loading ASR profile '%s' backend=%s model=%s device=%s compute_type=%s ...",
@@ -164,9 +185,11 @@ class WhisperEngine:
             else:
                 raise RuntimeError(f"Unsupported ASR backend '{backend}'.")
         except torch_cuda_oom_error():
+            self._reclaim_memory()
             logger.error("Out of GPU memory while loading profile '%s'.", model_name)
             raise RuntimeError(f"GPU out of memory loading '{model_name}'.")
         except Exception as exc:
+            self._reclaim_memory()
             logger.error("Failed to load ASR profile '%s': %s", model_name, exc)
             raise RuntimeError(f"Failed to load ASR profile '{model_name}': {exc}") from exc
 
@@ -175,6 +198,7 @@ class WhisperEngine:
         self._current_model = model_name
         self._current_device = device
         self._current_profile = profile
+        warm_up_text_corrector()
         logger.info("ASR profile '%s' loaded successfully on '%s'.", model_name, device)
 
     def _model_file_exists(self, model_name: str) -> bool:
@@ -289,6 +313,7 @@ class WhisperEngine:
 
     def unload_model(self) -> None:
         """Release all cached model instances and reclaim memory."""
+        unload_text_corrector()
         if self._model is None and not self._loaded_models:
             return
 
@@ -299,13 +324,17 @@ class WhisperEngine:
         self._current_device = None
         self._current_profile = {}
 
+        self._reclaim_memory()
+
+    @staticmethod
+    def _reclaim_memory() -> None:
         gc.collect()
         try:
             import torch
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        except ImportError:
+        except Exception:
             pass
 
     def transcribe(self, audio_data_np: np.ndarray) -> str:
@@ -366,6 +395,16 @@ class WhisperEngine:
             text = _collapse_repeats(text.strip())
             validation = validate_transcript(text, preprocess.output)
             text = validation.text
+            cleanup_changed = False
+            cleanup_ms = 0.0
+            if text and cleanup_enabled():
+                cleanup = cleanup_transcript(text)
+                text = cleanup.text
+                cleanup_changed = cleanup.changed
+                cleanup_ms = cleanup.elapsed_ms
+                cleanup_backend = cleanup.backend
+            else:
+                cleanup_backend = "off"
             self._last_metrics = self._build_metrics(
                 backend=backend,
                 duration_s=duration_s,
@@ -374,11 +413,14 @@ class WhisperEngine:
                 preprocess=preprocess,
                 hallucination_blocked=validation.blocked,
                 validation_reason=validation.reason,
+                cleanup_changed=cleanup_changed,
+                cleanup_ms=cleanup_ms,
+                cleanup_backend=cleanup_backend,
             )
 
         logger.info(
             "Transcription metrics: backend=%s model=%s compute_type=%s "
-            "audio=%.2fs infer=%.2fs total=%.2fs peak_vram=%sMB",
+            "audio=%.2fs infer=%.2fs total=%.2fs peak_vram=%sMB cleanup=%s/%s %.3fms",
             self._last_metrics.backend,
             self._last_metrics.model,
             self._last_metrics.compute_type,
@@ -386,6 +428,9 @@ class WhisperEngine:
             self._last_metrics.inference_seconds,
             self._last_metrics.total_seconds,
             self._last_metrics.peak_vram_mb,
+            self._last_metrics.cleanup_backend,
+            self._last_metrics.cleanup_changed,
+            self._last_metrics.cleanup_ms,
         )
         logger.debug("Transcription result: %r", text)
         return text
@@ -399,6 +444,9 @@ class WhisperEngine:
         preprocess: PreprocessResult,
         hallucination_blocked: bool = False,
         validation_reason: str = "",
+        cleanup_changed: bool = False,
+        cleanup_ms: float = 0.0,
+        cleanup_backend: str = "rules",
     ) -> TranscriptionMetrics:
         return TranscriptionMetrics(
             backend=backend,
@@ -424,6 +472,9 @@ class WhisperEngine:
             speech_detected=preprocess.output.speech_detected,
             hallucination_blocked=hallucination_blocked,
             validation_reason=validation_reason,
+            cleanup_changed=cleanup_changed,
+            cleanup_ms=cleanup_ms,
+            cleanup_backend=cleanup_backend,
         )
 
     @staticmethod
@@ -673,7 +724,10 @@ class WhisperEngine:
                 input=[tmp.name],
                 cache={},
                 batch_size=1,
-                language=str(self._current_profile.get("language", "中文")),
+                language=os.environ.get(
+                    "BYTECLI_FUN_ASR_LANGUAGE",
+                    str(self._current_profile.get("language", "auto")),
+                ),
                 itn=True,
                 disable_pbar=True,
             )
@@ -682,6 +736,7 @@ class WhisperEngine:
     def _transcribe_qwen_asr(self, audio: np.ndarray) -> str:
         kwargs = {
             "audio": (audio, 16000),
+            "context": _qwen_asr_context(),
             "language": None,
             "return_time_stamps": False,
         }
@@ -893,6 +948,13 @@ def _load_remote_asr_config() -> dict[str, Any]:
         if remote.get("timeout_seconds"):
             config["timeout_seconds"] = remote["timeout_seconds"]
     return config
+
+
+def _qwen_asr_context() -> str:
+    custom = os.environ.get("BYTECLI_QWEN_ASR_CONTEXT")
+    if custom is not None:
+        return custom.strip()
+    return DEFAULT_QWEN_ASR_CONTEXT
 
 
 def _build_multipart_body(

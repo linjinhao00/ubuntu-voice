@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# ByteCLI Remote ASR variant .deb builder.
+# ByteCLI local ASR variant .deb builder.
 #
 # This package is intentionally parallel-installable with the regular
 # "bytecli" package:
@@ -29,7 +29,7 @@ error()   { echo -e "${RED}[ERR]${NC}  $*"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.1.1-remote1"
+VERSION="1.1.5-local1"
 PY_PROJECT_VERSION="1.1.0"
 PY_PACKAGE_NAME="bytecli"
 PACKAGE_NAME="bytecli-remote-asr"
@@ -101,11 +101,11 @@ make_wrapper "${STAGING}/usr/bin/bytecli-remote-settings" "bytecli.settings.main
 make_wrapper "${STAGING}/usr/bin/bytecli-remote-asr-eval" "bytecli.eval.asr_eval"
 success "Remote wrapper scripts created"
 
-info "Installing remote systemd user service..."
+info "Installing local ASR systemd user service..."
 mkdir -p "${STAGING}/lib/systemd/user"
 cat > "${STAGING}/lib/systemd/user/bytecli-remote.service" << SERVICE
 [Unit]
-Description=ByteCLI Remote ASR Voice Dictation Service
+Description=ByteCLI Local Qwen/Fun ASR Voice Dictation Service
 After=graphical-session.target
 StartLimitBurst=3
 StartLimitIntervalSec=60
@@ -127,15 +127,15 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 SERVICE
-success "Remote systemd service file installed"
+success "Local ASR systemd service file installed"
 
 info "Installing remote desktop entry..."
 mkdir -p "${STAGING}/usr/share/applications"
 cat > "${STAGING}/usr/share/applications/bytecli-remote-settings.desktop" << 'DESKTOP'
 [Desktop Entry]
 Type=Application
-Name=ByteCLI Remote Settings
-Comment=Configure ByteCLI Remote ASR dictation
+Name=ByteCLI Local ASR Settings
+Comment=Configure ByteCLI local Qwen/Fun ASR dictation
 Exec=/usr/bin/bytecli-remote-settings
 Icon=audio-input-microphone
 Terminal=false
@@ -153,9 +153,9 @@ Architecture: all
 Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1,
          python3-dbus, xclip, xdotool, x11-utils, libportaudio2, python3-numpy,
          python3-pip
-Description: ByteCLI remote ASR dictation variant
- Parallel-installable ByteCLI variant for remote GLM/Qwen/Fun ASR models
- with local Fun-ASR fallback. It installs separate command names, systemd
+Description: ByteCLI local Qwen/Fun ASR dictation variant
+ Parallel-installable ByteCLI variant exposing only local Qwen3-ASR-0.6B
+ and Fun-ASR-Nano profiles. It installs separate command names, systemd
  unit, and config/data directories from the regular bytecli package.
 Maintainer: ByteCLI <noreply@github.com>
 Homepage: https://github.com/StriderXOXO/byteCLI
@@ -168,7 +168,7 @@ case "$1" in
   configure)
     systemctl --user daemon-reload 2>/dev/null || true
     systemctl --global daemon-reload 2>/dev/null || true
-    echo "ByteCLI Remote ASR installed."
+    echo "ByteCLI local Qwen/Fun ASR variant installed."
     echo "It is not auto-started. Stop bytecli.service, then start bytecli-remote.service."
     ;;
 esac
