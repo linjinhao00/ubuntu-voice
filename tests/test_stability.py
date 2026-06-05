@@ -695,6 +695,24 @@ class TestModelSwitcher:
         engine.unload_model.assert_called_once()
         engine.load_model.assert_called_once_with("tiny", "cpu")
 
+    def test_switch_model_uses_gpu_when_current_device_unknown(self, monkeypatch):
+        from bytecli.service import model_switcher as model_switcher_module
+
+        engine = self._make_engine_mock()
+        engine.current_device = None
+        switcher = ModelSwitcher(engine)
+        callback = MagicMock()
+        monkeypatch.setattr(
+            model_switcher_module.WhisperEngine,
+            "is_cuda_available",
+            staticmethod(lambda: True),
+        )
+
+        assert switcher.switch_model("tiny", callback) is True
+        time.sleep(0.5)
+
+        engine.load_model.assert_called_once_with("tiny", "gpu")
+
     def test_switch_model_debounce(self):
         engine = self._make_engine_mock()
         # Make load_model block so the first switch is still in progress.

@@ -35,6 +35,7 @@ from bytecli.constants import (
 )
 from bytecli.service.audio_preprocess import AudioPreprocessor, PreprocessResult
 from bytecli.service.transcript_cleanup import (
+    TextCorrectionSettings,
     cleanup_enabled,
     cleanup_transcript,
     unload_text_corrector,
@@ -46,6 +47,11 @@ logger = logging.getLogger(__name__)
 
 SHORT_AUDIO_SECONDS = 30.0
 SILENCE_RMS_THRESHOLD = 0.003
+_ASR_BACKENDS_REQUIRING_GPU_HEADROOM = {
+    "funasr_nano",
+    "qwen_asr",
+    "glm_asr",
+}
 DEFAULT_QWEN_ASR_CONTEXT = (
     "请按音频中实际说出的语言逐字转写，不要翻译。中文内容保持中文，"
     "不要翻译成英文；英文单词、英文缩写、代码词和产品名保持英文及原有大小写，"
@@ -183,7 +189,7 @@ class WhisperEngine:
             self._current_model = model_name
             self._current_device = device
             self._current_profile = profile
-            warm_up_text_corrector()
+            self._maybe_warm_up_text_corrector(profile, normalized_device)
             logger.info("Activated cached ASR profile '%s' on '%s'.", model_name, device)
             return
 
@@ -240,7 +246,7 @@ class WhisperEngine:
         self._current_model = model_name
         self._current_device = device
         self._current_profile = profile
-        warm_up_text_corrector()
+        self._maybe_warm_up_text_corrector(profile, normalized_device)
         logger.info("ASR profile '%s' loaded successfully on '%s'.", model_name, device)
 
     def _model_file_exists(self, model_name: str) -> bool:
@@ -417,6 +423,8 @@ class WhisperEngine:
 
         with self._lock:
             backend = str(self._current_profile.get("backend", "unknown"))
+            if self._needs_gpu_headroom_for_asr():
+                unload_text_corrector()
             total_start = time.perf_counter()
             self._reset_peak_vram()
             infer_start = time.perf_counter()
@@ -452,7 +460,12 @@ class WhisperEngine:
             cleanup_changed = False
             cleanup_ms = 0.0
             if text and cleanup_enabled():
-                cleanup = cleanup_transcript(text)
+                cleanup_settings = (
+                    TextCorrectionSettings(backend="rules")
+                    if self._needs_gpu_headroom_for_asr()
+                    else None
+                )
+                cleanup = cleanup_transcript(text, settings=cleanup_settings)
                 text = cleanup.text
                 cleanup_changed = cleanup.changed
                 cleanup_ms = cleanup.elapsed_ms
@@ -563,6 +576,32 @@ class WhisperEngine:
         if device == "gpu":
             return "cuda"
         return device
+
+    def _maybe_warm_up_text_corrector(
+        self,
+        profile: dict[str, Any],
+        normalized_device: str,
+    ) -> None:
+        backend = str(profile.get("backend", ""))
+        if (
+            normalized_device == "cuda"
+            and backend in _ASR_BACKENDS_REQUIRING_GPU_HEADROOM
+        ):
+            logger.info(
+                "Skipping Qwen text corrector warm-up for backend=%s to preserve "
+                "GPU headroom for ASR inference.",
+                backend,
+            )
+            unload_text_corrector()
+            return
+        warm_up_text_corrector()
+
+    def _needs_gpu_headroom_for_asr(self) -> bool:
+        backend = str(self._current_profile.get("backend", ""))
+        return (
+            self._normalize_device(self._current_device or "cpu") == "cuda"
+            and backend in _ASR_BACKENDS_REQUIRING_GPU_HEADROOM
+        )
 
     def _load_faster_whisper(self, profile: dict[str, Any], device: str):
         try:

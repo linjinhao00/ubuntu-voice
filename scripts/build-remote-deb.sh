@@ -29,7 +29,7 @@ error()   { echo -e "${RED}[ERR]${NC}  $*"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.1.5-local2"
+VERSION="1.1.5-local3"
 PY_PROJECT_VERSION="1.1.0"
 PY_PACKAGE_NAME="bytecli"
 PACKAGE_NAME="bytecli-remote-asr"

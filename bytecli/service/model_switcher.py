@@ -71,7 +71,7 @@ class ModelSwitcher:
             self._engine.cancel_pending_loads()
 
         old_model = self._engine.current_model
-        old_device = self._engine.current_device or "cpu"
+        old_device = self._engine.current_device or _default_device()
 
         dbus_signal_callback("switching", "")
 
@@ -112,7 +112,7 @@ class ModelSwitcher:
             self._engine.cancel_pending_loads()
 
         old_model = self._engine.current_model or "small"
-        old_device = self._engine.current_device or "cpu"
+        old_device = self._engine.current_device or _default_device()
 
         dbus_signal_callback("switching", "")
 
@@ -219,3 +219,7 @@ class ModelSwitcher:
         logger.error("Model/device switch timed out after %d s.", MODEL_SWITCH_TIMEOUT)
         # Attempt a rollback.
         self._rollback(old_model, old_device, callback, "Switch timed out.")
+
+
+def _default_device() -> str:
+    return "gpu" if WhisperEngine.is_cuda_available() else "cpu"
