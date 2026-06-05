@@ -107,11 +107,13 @@ cat > "${STAGING}/lib/systemd/user/bytecli-remote.service" << SERVICE
 [Unit]
 Description=ByteCLI Remote ASR Voice Dictation Service
 After=graphical-session.target
+StartLimitBurst=3
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/bytecli-remote-service
-Environment=DISPLAY=:0
+Environment=DISPLAY=:1
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 Environment=BYTECLI_CONFIG_DIR=%h/.config/bytecli-remote
 Environment=BYTECLI_DATA_DIR=%h/.local/share/bytecli-remote
@@ -121,8 +123,6 @@ Environment=PYTHONPATH=${OPT_LIB}
 Environment=LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib
 Restart=on-failure
 RestartSec=5
-StartLimitBurst=3
-StartLimitIntervalSec=60
 
 [Install]
 WantedBy=default.target

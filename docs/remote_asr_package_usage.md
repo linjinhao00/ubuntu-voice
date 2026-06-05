@@ -19,7 +19,7 @@
 SHA256：
 
 ```text
-b599b9192eec75db3ec10a9c771d8fcceef92a5a7ebdd7ee8029104b26aac76b
+2ad97093a7c1676954312858aa8ed9d72074a6f294aab551451554132b68d108
 ```
 
 ## 为什么不会和当前包冲突
@@ -140,6 +140,20 @@ journalctl --user -u bytecli-remote.service -n 100 --no-pager
 
 ```bash
 curl -fsSL https://asr.linjh-personal.top/health
+```
+
+填好 token 后，可以直接用 curl 验证 3 个远端后端。注意：家里服务端必须支持按请求读取 `backend` 字段；如果服务端忽略该字段，实际模型以后端服务器当前 `.env` 为准。
+
+```bash
+TOKEN='这里填家里服务器 token'
+for backend in glm_asr qwen_asr fun_asr; do
+  curl -fsSL \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -F "backend=${backend}" \
+    -F "file=@/tmp/bytecli_remote_probe.wav;type=audio/wav" \
+    https://asr.linjh-personal.top/v1/audio/transcriptions
+  echo
+done
 ```
 
 如果 F8 没有响应，先确认只运行了一个服务：
