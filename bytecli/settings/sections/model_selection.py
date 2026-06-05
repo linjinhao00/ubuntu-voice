@@ -17,7 +17,11 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import GLib, Gtk
 
-from bytecli.constants import INFERENCE_PROFILES, VISIBLE_INFERENCE_PROFILES
+from bytecli.constants import (
+    INFERENCE_PROFILES,
+    MODEL_SWITCH_TIMEOUT,
+    VISIBLE_INFERENCE_PROFILES,
+)
 from bytecli.i18n import i18n
 from bytecli.shared.dbus_client import DBusClient
 from bytecli.settings.widgets.section_card import SectionCard
@@ -59,6 +63,14 @@ class ModelSelectionSection(Gtk.Box):
             "balanced": ("model.balanced", "model.balanced_desc"),
             "zh_fast": ("model.zh_fast", "model.zh_fast_desc"),
             "fun_asr_nano": ("model.fun_asr_nano", "model.fun_asr_nano_desc"),
+            "sherpa_sensevoice": (
+                "model.sherpa_sensevoice",
+                "model.sherpa_sensevoice_desc",
+            ),
+            "sherpa_funasr_nano": (
+                "model.sherpa_funasr_nano",
+                "model.sherpa_funasr_nano_desc",
+            ),
             "experimental_qwen": ("model.qwen", "model.qwen_desc"),
             "remote_glm_low_volume": (
                 "model.remote_glm",
@@ -139,7 +151,10 @@ class ModelSelectionSection(Gtk.Box):
         self._on_changed()
         self._dbus_client.switch_model(key, callback=self._on_switch_result)
         # Safety timeout in case the service crashes mid-switch.
-        self._switch_timeout_id = GLib.timeout_add(65000, self._on_switch_timeout)
+        self._switch_timeout_id = GLib.timeout_add(
+            (MODEL_SWITCH_TIMEOUT + 5) * 1000,
+            self._on_switch_timeout,
+        )
 
     def _set_switching_ui(self, active_key: str) -> None:
         for key, radio in self._radios.items():

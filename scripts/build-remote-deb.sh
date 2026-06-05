@@ -29,7 +29,7 @@ error()   { echo -e "${RED}[ERR]${NC}  $*"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.1.5-local1"
+VERSION="1.1.5-local2"
 PY_PROJECT_VERSION="1.1.0"
 PY_PACKAGE_NAME="bytecli"
 PACKAGE_NAME="bytecli-remote-asr"
@@ -99,13 +99,15 @@ make_wrapper "${STAGING}/usr/bin/bytecli-remote-service" "bytecli.service.main"
 make_wrapper "${STAGING}/usr/bin/bytecli-remote-indicator" "bytecli.indicator.main"
 make_wrapper "${STAGING}/usr/bin/bytecli-remote-settings" "bytecli.settings.main"
 make_wrapper "${STAGING}/usr/bin/bytecli-remote-asr-eval" "bytecli.eval.asr_eval"
+install -m 755 "${PROJECT_DIR}/scripts/download-sherpa-onnx-models.sh" \
+    "${STAGING}/usr/bin/bytecli-remote-download-sherpa-models"
 success "Remote wrapper scripts created"
 
 info "Installing local ASR systemd user service..."
 mkdir -p "${STAGING}/lib/systemd/user"
 cat > "${STAGING}/lib/systemd/user/bytecli-remote.service" << SERVICE
 [Unit]
-Description=ByteCLI Local Qwen/Fun ASR Voice Dictation Service
+Description=ByteCLI Local Qwen/Fun/Sherpa ASR Voice Dictation Service
 After=graphical-session.target
 StartLimitBurst=3
 StartLimitIntervalSec=60
@@ -135,7 +137,7 @@ cat > "${STAGING}/usr/share/applications/bytecli-remote-settings.desktop" << 'DE
 [Desktop Entry]
 Type=Application
 Name=ByteCLI Local ASR Settings
-Comment=Configure ByteCLI local Qwen/Fun ASR dictation
+Comment=Configure ByteCLI local Qwen/Fun/Sherpa ASR dictation
 Exec=/usr/bin/bytecli-remote-settings
 Icon=audio-input-microphone
 Terminal=false
@@ -153,10 +155,11 @@ Architecture: all
 Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1,
          python3-dbus, xclip, xdotool, x11-utils, libportaudio2, python3-numpy,
          python3-pip
-Description: ByteCLI local Qwen/Fun ASR dictation variant
- Parallel-installable ByteCLI variant exposing only local Qwen3-ASR-0.6B
- and Fun-ASR-Nano profiles. It installs separate command names, systemd
- unit, and config/data directories from the regular bytecli package.
+Description: ByteCLI local Qwen/Fun/Sherpa ASR dictation variant
+ Parallel-installable ByteCLI variant exposing local Qwen3-ASR-0.6B,
+ Fun-ASR-Nano, and sherpa-onnx ASR profiles. It installs separate command
+ names, systemd unit, and config/data directories from the regular bytecli
+ package.
 Maintainer: ByteCLI <noreply@github.com>
 Homepage: https://github.com/StriderXOXO/byteCLI
 CONTROL

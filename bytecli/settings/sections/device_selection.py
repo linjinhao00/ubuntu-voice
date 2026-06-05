@@ -16,6 +16,7 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import GLib, Gtk
 
+from bytecli.constants import MODEL_SWITCH_TIMEOUT
 from bytecli.i18n import i18n
 from bytecli.shared.dbus_client import DBusClient
 from bytecli.settings.widgets.section_card import SectionCard
@@ -136,7 +137,10 @@ class DeviceSelectionSection(Gtk.Box):
             "SwitchDevice", parameters=params, callback=self._on_switch_result
         )
         # Safety timeout in case the service crashes mid-switch.
-        self._switch_timeout_id = GLib.timeout_add(65000, self._on_switch_timeout)
+        self._switch_timeout_id = GLib.timeout_add(
+            (MODEL_SWITCH_TIMEOUT + 5) * 1000,
+            self._on_switch_timeout,
+        )
 
     def _on_switch_result(self, result) -> None:
         if self._switch_timeout_id is not None:

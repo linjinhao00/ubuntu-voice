@@ -64,7 +64,7 @@ class TestConfigManager:
         finally:
             importlib.reload(constants)
 
-    def test_remote_profile_set_limits_visible_models(self, monkeypatch):
+    def test_remote_profile_set_limits_visible_models(self, monkeypatch, tmp_path):
         import importlib
         import bytecli.constants as constants
 
@@ -77,6 +77,7 @@ class TestConfigManager:
             else real_find_spec(name),
         )
         monkeypatch.setenv("BYTECLI_PROFILE_SET", "remote")
+        monkeypatch.setenv("BYTECLI_DATA_DIR", str(tmp_path))
         reloaded = importlib.reload(constants)
         try:
             assert reloaded.DEFAULT_CONFIG["model"] == "experimental_qwen"
@@ -86,10 +87,13 @@ class TestConfigManager:
             )
             assert tuple(reloaded.WHISPER_MODELS) == (
                 "fun_asr_nano",
+                "sherpa_sensevoice",
+                "sherpa_funasr_nano",
                 "experimental_qwen",
             )
         finally:
             monkeypatch.delenv("BYTECLI_PROFILE_SET", raising=False)
+            monkeypatch.delenv("BYTECLI_DATA_DIR", raising=False)
             importlib.reload(constants)
 
     def test_save_and_reload(self, tmp_path):
@@ -688,6 +692,8 @@ class TestModelSwitcher:
         states = [r[0] for r in results]
         assert "switching" in states
         assert "success" in states
+        engine.unload_model.assert_called_once()
+        engine.load_model.assert_called_once_with("tiny", "cpu")
 
     def test_switch_model_debounce(self):
         engine = self._make_engine_mock()
@@ -740,6 +746,8 @@ class TestModelSwitcher:
 
         states = [r[0] for r in results]
         assert "success" in states
+        engine.unload_model.assert_called_once()
+        engine.load_model.assert_called_once_with("small", "gpu")
 
     def test_double_finish_guard(self):
         """Timeout + worker race: both call _finish, should not double-fire."""
@@ -1141,6 +1149,143 @@ class TestWhisperEngine:
                 sys.modules["funasr"] = old_funasr
             else:
                 del sys.modules["funasr"]
+
+    def test_sherpa_sensevoice_profile_transcribes_and_records_metrics(self, monkeypatch):
+        from bytecli.service import audio_preprocess
+        from bytecli.service.whisper_engine import WhisperEngine
+        import numpy as np
+        import sys
+
+        captured = {}
+
+        class FakeStream:
+            def __init__(self):
+                self.result = types.SimpleNamespace(text="你好 SenseVoice")
+
+            def accept_waveform(self, sample_rate, waveform):
+                captured["sample_rate"] = sample_rate
+                captured["waveform_dtype"] = waveform.dtype
+
+        class FakeRecognizer:
+            def create_stream(self):
+                return FakeStream()
+
+            def decode_stream(self, stream):
+                captured["decoded"] = True
+
+        class FakeOfflineRecognizer:
+            @classmethod
+            def from_sense_voice(cls, **kwargs):
+                captured["load_kwargs"] = kwargs
+                return FakeRecognizer()
+
+        old_sherpa = sys.modules.get("sherpa_onnx")
+        old_detect = audio_preprocess.detect_speech_ratio
+        sys.modules["sherpa_onnx"] = types.SimpleNamespace(
+            OfflineRecognizer=FakeOfflineRecognizer
+        )
+        audio_preprocess.detect_speech_ratio = lambda audio: (None, "energy")
+        try:
+            tmp_dir = tempfile.TemporaryDirectory()
+            model_dir = tmp_dir.name
+            open(os.path.join(model_dir, "model.int8.onnx"), "w").close()
+            open(os.path.join(model_dir, "tokens.txt"), "w").close()
+            monkeypatch.setenv("BYTECLI_SHERPA_SENSEVOICE_MODEL_DIR", model_dir)
+
+            engine = WhisperEngine()
+            engine.load_model("sherpa_sensevoice", "gpu")
+            text = engine.transcribe(np.ones(16000, dtype=np.float32) * 0.01)
+
+            assert text == "你好 SenseVoice"
+            assert captured["load_kwargs"]["model"].endswith("model.int8.onnx")
+            assert captured["load_kwargs"]["tokens"].endswith("tokens.txt")
+            assert captured["load_kwargs"]["provider"] == "cpu"
+            assert captured["load_kwargs"]["language"] == ""
+            assert captured["load_kwargs"]["use_itn"] is True
+            assert captured["sample_rate"] == 16000
+            assert captured["waveform_dtype"] == np.float32
+            assert captured["decoded"] is True
+            assert engine.last_metrics["backend"] == "sherpa_sensevoice"
+            assert engine.last_metrics["profile"] == "sherpa_sensevoice"
+        finally:
+            if "tmp_dir" in locals():
+                tmp_dir.cleanup()
+            audio_preprocess.detect_speech_ratio = old_detect
+            if old_sherpa is not None:
+                sys.modules["sherpa_onnx"] = old_sherpa
+            else:
+                del sys.modules["sherpa_onnx"]
+
+    def test_sherpa_funasr_nano_profile_transcribes_and_records_metrics(self, monkeypatch):
+        from bytecli.service import audio_preprocess
+        from bytecli.service.whisper_engine import WhisperEngine
+        import numpy as np
+        import sys
+
+        captured = {}
+
+        class FakeStream:
+            result = '{"text":"你好 Sherpa FunASR"}'
+
+            def accept_waveform(self, sample_rate, waveform):
+                captured["sample_rate"] = sample_rate
+                captured["waveform_dtype"] = waveform.dtype
+
+        class FakeRecognizer:
+            def create_stream(self):
+                return FakeStream()
+
+            def decode_stream(self, stream):
+                captured["decoded"] = True
+
+        class FakeOfflineRecognizer:
+            @classmethod
+            def from_funasr_nano(cls, **kwargs):
+                captured["load_kwargs"] = kwargs
+                return FakeRecognizer()
+
+        old_sherpa = sys.modules.get("sherpa_onnx")
+        old_detect = audio_preprocess.detect_speech_ratio
+        sys.modules["sherpa_onnx"] = types.SimpleNamespace(
+            OfflineRecognizer=FakeOfflineRecognizer
+        )
+        audio_preprocess.detect_speech_ratio = lambda audio: (None, "energy")
+        try:
+            tmp_dir = tempfile.TemporaryDirectory()
+            model_dir = tmp_dir.name
+            os.makedirs(os.path.join(model_dir, "Qwen3-0.6B"))
+            open(os.path.join(model_dir, "encoder_adaptor.int8.onnx"), "w").close()
+            open(os.path.join(model_dir, "llm.int8.onnx"), "w").close()
+            open(os.path.join(model_dir, "embedding.int8.onnx"), "w").close()
+            monkeypatch.setenv("BYTECLI_SHERPA_FUNASR_NANO_MODEL_DIR", model_dir)
+
+            engine = WhisperEngine()
+            engine.load_model("sherpa_funasr_nano", "gpu")
+            text = engine.transcribe(np.ones(16000, dtype=np.float32) * 0.01)
+
+            assert text == "你好 Sherpa FunASR"
+            assert captured["load_kwargs"]["encoder_adaptor"].endswith(
+                "encoder_adaptor.int8.onnx"
+            )
+            assert captured["load_kwargs"]["llm"].endswith("llm.int8.onnx")
+            assert captured["load_kwargs"]["embedding"].endswith("embedding.int8.onnx")
+            assert captured["load_kwargs"]["tokenizer"].endswith("Qwen3-0.6B")
+            assert captured["load_kwargs"]["provider"] == "cpu"
+            assert captured["load_kwargs"]["user_prompt"] == "语音转写:"
+            assert captured["load_kwargs"]["max_new_tokens"] == 256
+            assert captured["sample_rate"] == 16000
+            assert captured["waveform_dtype"] == np.float32
+            assert captured["decoded"] is True
+            assert engine.last_metrics["backend"] == "sherpa_funasr_nano"
+            assert engine.last_metrics["profile"] == "sherpa_funasr_nano"
+        finally:
+            if "tmp_dir" in locals():
+                tmp_dir.cleanup()
+            audio_preprocess.detect_speech_ratio = old_detect
+            if old_sherpa is not None:
+                sys.modules["sherpa_onnx"] = old_sherpa
+            else:
+                del sys.modules["sherpa_onnx"]
 
     def test_remote_asr_profile_posts_audio_and_records_metrics(self, monkeypatch):
         from bytecli.service import audio_preprocess

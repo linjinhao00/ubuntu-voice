@@ -68,6 +68,7 @@ class ModelSwitcher:
                 )
                 return False
             self._state = ModelSwitchState.SWITCHING
+            self._engine.cancel_pending_loads()
 
         old_model = self._engine.current_model
         old_device = self._engine.current_device or "cpu"
@@ -108,6 +109,7 @@ class ModelSwitcher:
                 )
                 return False
             self._state = ModelSwitchState.SWITCHING
+            self._engine.cancel_pending_loads()
 
         old_model = self._engine.current_model or "small"
         old_device = self._engine.current_device or "cpu"
@@ -142,8 +144,9 @@ class ModelSwitcher:
         callback: Callable[[str, str], None],
     ) -> None:
         try:
-            # Keep previously loaded instances resident so hotkey dictation
-            # does not pay model-load cost after every profile switch.
+            current_model = self._engine.current_model
+            if current_model is not None and current_model != new_model:
+                self._engine.unload_model()
             self._engine.load_model(new_model, old_device)
             self._finish(callback, "success", "")
         except Exception as exc:
@@ -158,6 +161,8 @@ class ModelSwitcher:
         callback: Callable[[str, str], None],
     ) -> None:
         try:
+            if old_model:
+                self._engine.unload_model()
             self._engine.load_model(old_model, new_device)
             self._finish(callback, "success", "")
         except Exception as exc:

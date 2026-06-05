@@ -53,7 +53,7 @@ DBUS_INTERFACE: str = "com.bytecli.ServiceInterface"
 # ---------------------------------------------------------------------------
 START_TIMEOUT: int = 30
 STOP_TIMEOUT: int = 10
-MODEL_SWITCH_TIMEOUT: int = 60
+MODEL_SWITCH_TIMEOUT: int = 300
 RESTART_TIMEOUT: int = 40
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,71 @@ def _env_dir_available(env_name: str) -> bool:
 
 def _funasr_runtime_available() -> bool:
     return _dependency_available("funasr") and _dependency_available("torchaudio")
+
+
+def _sherpa_runtime_available() -> bool:
+    return _dependency_available("sherpa_onnx")
+
+
+def _sherpa_sensevoice_model_dir() -> str:
+    return os.path.expanduser(
+        os.environ.get(
+            "BYTECLI_SHERPA_SENSEVOICE_MODEL_DIR",
+            os.path.join(
+                MODEL_DIR,
+                "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+            ),
+        )
+    )
+
+
+def _sherpa_funasr_nano_model_dir() -> str:
+    return os.path.expanduser(
+        os.environ.get(
+            "BYTECLI_SHERPA_FUNASR_NANO_MODEL_DIR",
+            os.path.join(
+                MODEL_DIR,
+                "sherpa-onnx-funasr-nano-int8-2025-12-30",
+            ),
+        )
+    )
+
+
+def _sherpa_sensevoice_available() -> bool:
+    model_dir = _sherpa_sensevoice_model_dir()
+    return (
+        _sherpa_runtime_available()
+        and os.path.isfile(os.path.join(model_dir, "tokens.txt"))
+        and (
+            os.path.isfile(os.path.join(model_dir, "model.int8.onnx"))
+            or os.path.isfile(os.path.join(model_dir, "model.onnx"))
+        )
+    )
+
+
+def _sherpa_funasr_nano_available() -> bool:
+    model_dir = _sherpa_funasr_nano_model_dir()
+    tokenizer_dirs = (
+        os.path.join(model_dir, "Qwen3-0.6B"),
+        os.path.join(model_dir, "Qwen3-0.6 B"),
+    )
+    return (
+        _sherpa_runtime_available()
+        and any(os.path.isdir(path) for path in tokenizer_dirs)
+        and (
+            os.path.isfile(os.path.join(model_dir, "encoder_adaptor.int8.onnx"))
+            or os.path.isfile(os.path.join(model_dir, "encoder_adaptor.onnx"))
+        )
+        and (
+            os.path.isfile(os.path.join(model_dir, "llm.int8.onnx"))
+            or os.path.isfile(os.path.join(model_dir, "llm.fp16.onnx"))
+            or os.path.isfile(os.path.join(model_dir, "llm.onnx"))
+        )
+        and (
+            os.path.isfile(os.path.join(model_dir, "embedding.int8.onnx"))
+            or os.path.isfile(os.path.join(model_dir, "embedding.onnx"))
+        )
+    )
 
 
 _REMOTE_ASR_ENDPOINT = os.environ.get(
@@ -185,6 +250,31 @@ INFERENCE_PROFILES: dict[str, dict[str, object]] = {
         "language": "auto",
         "visible": _funasr_runtime_available(),
     },
+    "sherpa_sensevoice": {
+        "display_name": "Sherpa SenseVoice",
+        "description": "sherpa-onnx SenseVoice Small int8, CPU-friendly",
+        "backend": "sherpa_sensevoice",
+        "model": _sherpa_sensevoice_model_dir(),
+        "compute_type": "int8",
+        "provider": "cpu",
+        "num_threads": 2,
+        "language": "auto",
+        "use_itn": True,
+        "visible": _sherpa_sensevoice_available(),
+    },
+    "sherpa_funasr_nano": {
+        "display_name": "Sherpa FunASR Nano",
+        "description": "sherpa-onnx Fun-ASR-Nano int8, CPU-friendly",
+        "backend": "sherpa_funasr_nano",
+        "model": _sherpa_funasr_nano_model_dir(),
+        "compute_type": "int8",
+        "provider": "cpu",
+        "num_threads": 2,
+        "language": "",
+        "itn": True,
+        "max_new_tokens": 256,
+        "visible": _sherpa_funasr_nano_available(),
+    },
     "experimental_qwen": {
         "display_name": "Qwen ASR 0.6B",
         "description": "Qwen3-ASR-0.6B transformers backend",
@@ -210,6 +300,8 @@ INFERENCE_PROFILE_ORDER: tuple[str, ...] = (
     "remote_glm_low_volume",
     "remote_qwen_1_7b",
     "remote_fun_asr_nano",
+    "sherpa_sensevoice",
+    "sherpa_funasr_nano",
     "fun_asr_nano",
     "zh_fast",
     "experimental_qwen",
@@ -219,6 +311,8 @@ INFERENCE_PROFILE_ORDER: tuple[str, ...] = (
 
 if _PROFILE_SET == "remote":
     INFERENCE_PROFILE_ORDER = (
+        "sherpa_sensevoice",
+        "sherpa_funasr_nano",
         "experimental_qwen",
         "fun_asr_nano",
     )

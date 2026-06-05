@@ -98,6 +98,11 @@ class TranscriptionMetrics:
     cleanup_backend: str = "rules"
 
 
+class _StaleModelLoad(RuntimeError):
+    def __init__(self, model_name: str) -> None:
+        super().__init__(f"Stale ASR load discarded for '{model_name}'.")
+
+
 class WhisperEngine:
     """Manages ASR runtime instances and thread-safe transcription."""
 
@@ -108,6 +113,8 @@ class WhisperEngine:
         self._current_device: Optional[str] = None
         self._current_profile: dict[str, Any] = {}
         self._lock = threading.Lock()
+        self._load_generation_lock = threading.Lock()
+        self._load_generation = 0
         self._loading = False
         self._last_metrics: Optional[TranscriptionMetrics] = None
         self._preprocessor_profile = os.environ.get(
@@ -140,14 +147,38 @@ class WhisperEngine:
     def set_preprocessor_profile(self, profile: str) -> None:
         self._preprocessor_profile = profile or "vad_norm"
 
-    def load_model(self, model_name: str, device: str = "cpu") -> None:
+    def cancel_pending_loads(self) -> None:
+        """Invalidate background loads that have not activated yet."""
+        with self._load_generation_lock:
+            self._load_generation += 1
+            self._loading = False
+
+    def _new_load_generation(self) -> int:
+        with self._load_generation_lock:
+            self._load_generation += 1
+            return self._load_generation
+
+    def _generation_is_current(self, generation: int) -> bool:
+        with self._load_generation_lock:
+            return generation == self._load_generation
+
+    def load_model(
+        self,
+        model_name: str,
+        device: str = "cpu",
+        _generation: Optional[int] = None,
+    ) -> None:
         """Load or activate an inference profile/model on *device*."""
+        if _generation is None:
+            self.cancel_pending_loads()
         os.makedirs(MODEL_DIR, exist_ok=True)
         profile = self._resolve_profile(model_name)
         normalized_device = self._normalize_device(device)
         cache_key = (model_name, normalized_device)
 
         if cache_key in self._loaded_models:
+            if _generation is not None and not self._generation_is_current(_generation):
+                raise _StaleModelLoad(model_name)
             self._model = self._loaded_models[cache_key]
             self._current_model = model_name
             self._current_device = device
@@ -176,6 +207,10 @@ class WhisperEngine:
                 model = self._load_sensevoice_onnx(profile, normalized_device)
             elif backend == "funasr_nano":
                 model = self._load_funasr_nano(profile, normalized_device)
+            elif backend == "sherpa_sensevoice":
+                model = self._load_sherpa_sensevoice(profile, normalized_device)
+            elif backend == "sherpa_funasr_nano":
+                model = self._load_sherpa_funasr_nano(profile, normalized_device)
             elif backend == "qwen_asr":
                 model = self._load_qwen_asr(profile, normalized_device)
             elif backend == "glm_asr":
@@ -192,6 +227,13 @@ class WhisperEngine:
             self._reclaim_memory()
             logger.error("Failed to load ASR profile '%s': %s", model_name, exc)
             raise RuntimeError(f"Failed to load ASR profile '{model_name}': {exc}") from exc
+
+        if _generation is not None and not self._generation_is_current(_generation):
+            try:
+                del model
+            finally:
+                self._reclaim_memory()
+            raise _StaleModelLoad(model_name)
 
         self._loaded_models[cache_key] = model
         self._model = model
@@ -290,18 +332,28 @@ class WhisperEngine:
     ) -> None:
         """Load the selected ASR profile in a background thread."""
         self._loading = True
+        generation = self._new_load_generation()
 
         def _worker():
             try:
+                if not self._generation_is_current(generation):
+                    raise _StaleModelLoad(model_name)
                 if not self._model_file_exists(model_name):
                     self._download_model_file(model_name, progress_callback)
                 elif progress_callback:
                     progress_callback(100, "Loading model...")
 
-                self.load_model(model_name, device)
+                if not self._generation_is_current(generation):
+                    raise _StaleModelLoad(model_name)
+                self.load_model(model_name, device, _generation=generation)
                 self._loading = False
                 if done_callback:
                     done_callback(True, "Model loaded successfully.")
+            except _StaleModelLoad:
+                logger.info(
+                    "Discarded stale background ASR load for profile '%s'.",
+                    model_name,
+                )
             except Exception as exc:
                 self._loading = False
                 logger.error("Async ASR model load failed: %s", exc)
@@ -377,6 +429,8 @@ class WhisperEngine:
                     text = self._transcribe_sensevoice_onnx(preprocess.audio)
                 elif backend == "funasr_nano":
                     text = self._transcribe_funasr_nano(preprocess.audio)
+                elif backend in ("sherpa_sensevoice", "sherpa_funasr_nano"):
+                    text = self._transcribe_sherpa_onnx(preprocess.audio)
                 elif backend == "qwen_asr":
                     text = self._transcribe_qwen_asr(preprocess.audio)
                 elif backend == "glm_asr":
@@ -602,6 +656,127 @@ class WhisperEngine:
                 logger.warning("Fun-ASR-Nano load failed with model=%s: %s", candidate, exc)
         raise RuntimeError(f"Fun-ASR-Nano failed to load: {last_error}")
 
+    def _load_sherpa_sensevoice(self, profile: dict[str, Any], device: str):
+        try:
+            import sherpa_onnx  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise RuntimeError(
+                "sherpa-onnx is not installed. Install it with "
+                "`/usr/bin/python3 -m pip install --user sherpa-onnx==1.13.2`."
+            ) from exc
+
+        model_dir = os.path.expanduser(
+            os.environ.get(
+                "BYTECLI_SHERPA_SENSEVOICE_MODEL_DIR",
+                str(profile["model"]),
+            )
+        )
+        model_path = _first_existing_path(
+            model_dir,
+            ("model.int8.onnx", "model.onnx"),
+            "sherpa SenseVoice model",
+        )
+        tokens_path = _require_existing_path(model_dir, "tokens.txt")
+        provider = _sherpa_provider(profile, device)
+        language = _sherpa_language(
+            os.environ.get("BYTECLI_SHERPA_SENSEVOICE_LANGUAGE"),
+            str(profile.get("language", "auto")),
+        )
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=model_path,
+            tokens=tokens_path,
+            num_threads=_sherpa_num_threads(profile),
+            sample_rate=16000,
+            feature_dim=80,
+            decoding_method=str(profile.get("decoding_method", "greedy_search")),
+            debug=_env_bool("BYTECLI_SHERPA_ONNX_DEBUG", False),
+            provider=provider,
+            language=language,
+            use_itn=_profile_bool(profile, "use_itn", True),
+        )
+        return {
+            "recognizer": recognizer,
+            "sample_rate": 16000,
+            "provider": provider,
+            "model": model_path,
+        }
+
+    def _load_sherpa_funasr_nano(self, profile: dict[str, Any], device: str):
+        try:
+            import sherpa_onnx  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise RuntimeError(
+                "sherpa-onnx is not installed. Install it with "
+                "`/usr/bin/python3 -m pip install --user sherpa-onnx==1.13.2`."
+            ) from exc
+
+        model_dir = os.path.expanduser(
+            os.environ.get(
+                "BYTECLI_SHERPA_FUNASR_NANO_MODEL_DIR",
+                str(profile["model"]),
+            )
+        )
+        encoder_adaptor = _first_existing_path(
+            model_dir,
+            ("encoder_adaptor.int8.onnx", "encoder_adaptor.onnx"),
+            "sherpa FunASR encoder adaptor",
+        )
+        llm = _first_existing_path(
+            model_dir,
+            ("llm.int8.onnx", "llm.fp16.onnx", "llm.onnx"),
+            "sherpa FunASR LLM",
+        )
+        embedding = _first_existing_path(
+            model_dir,
+            ("embedding.int8.onnx", "embedding.onnx"),
+            "sherpa FunASR embedding",
+        )
+        tokenizer = _first_existing_dir(
+            model_dir,
+            ("Qwen3-0.6B", "Qwen3-0.6 B", "tokenizer"),
+            "sherpa FunASR tokenizer",
+        )
+        provider = _sherpa_provider(profile, device)
+        language = _sherpa_language(
+            os.environ.get("BYTECLI_SHERPA_FUNASR_NANO_LANGUAGE"),
+            str(profile.get("language", "")),
+        )
+
+        recognizer = sherpa_onnx.OfflineRecognizer.from_funasr_nano(
+            encoder_adaptor=encoder_adaptor,
+            llm=llm,
+            embedding=embedding,
+            tokenizer=tokenizer,
+            num_threads=_sherpa_num_threads(profile),
+            sample_rate=16000,
+            feature_dim=80,
+            decoding_method=str(profile.get("decoding_method", "greedy_search")),
+            debug=_env_bool("BYTECLI_SHERPA_ONNX_DEBUG", False),
+            provider=provider,
+            system_prompt=os.environ.get(
+                "BYTECLI_SHERPA_FUNASR_SYSTEM_PROMPT",
+                "You are a helpful assistant.",
+            ),
+            user_prompt=os.environ.get(
+                "BYTECLI_SHERPA_FUNASR_USER_PROMPT",
+                "语音转写:",
+            ),
+            max_new_tokens=int(profile.get("max_new_tokens", 256)),
+            temperature=float(profile.get("temperature", 0.000001)),
+            top_p=float(profile.get("top_p", 0.8)),
+            seed=int(profile.get("seed", 42)),
+            language=language,
+            itn=_profile_bool(profile, "itn", True),
+            hotwords=os.environ.get("BYTECLI_SHERPA_FUNASR_HOTWORDS", ""),
+        )
+        return {
+            "recognizer": recognizer,
+            "sample_rate": 16000,
+            "provider": provider,
+            "model": model_dir,
+        }
+
     def _load_qwen_asr(self, profile: dict[str, Any], device: str):
         try:
             import torch
@@ -732,6 +907,14 @@ class WhisperEngine:
                 disable_pbar=True,
             )
         return _extract_text(result)
+
+    def _transcribe_sherpa_onnx(self, audio: np.ndarray) -> str:
+        recognizer = self._model["recognizer"]
+        sample_rate = int(self._model.get("sample_rate", 16000))
+        stream = recognizer.create_stream()
+        stream.accept_waveform(sample_rate, np.asarray(audio, dtype=np.float32))
+        recognizer.decode_stream(stream)
+        return _extract_sherpa_text(stream.result)
 
     def _transcribe_qwen_asr(self, audio: np.ndarray) -> str:
         kwargs = {
@@ -909,6 +1092,69 @@ def _find_huggingface_snapshot(model_id: str) -> Optional[str]:
     return usable[0]
 
 
+def _first_existing_path(model_dir: str, filenames: tuple[str, ...], label: str) -> str:
+    for filename in filenames:
+        path = os.path.join(model_dir, filename)
+        if os.path.isfile(path):
+            return path
+    joined = ", ".join(filenames)
+    raise RuntimeError(f"{label} not found in {model_dir}; expected one of: {joined}.")
+
+
+def _first_existing_dir(model_dir: str, dirnames: tuple[str, ...], label: str) -> str:
+    for dirname in dirnames:
+        path = os.path.join(model_dir, dirname)
+        if os.path.isdir(path):
+            return path
+    joined = ", ".join(dirnames)
+    raise RuntimeError(f"{label} not found in {model_dir}; expected one of: {joined}.")
+
+
+def _require_existing_path(model_dir: str, filename: str) -> str:
+    path = os.path.join(model_dir, filename)
+    if os.path.isfile(path):
+        return path
+    raise RuntimeError(f"Required sherpa-onnx file is missing: {path}.")
+
+
+def _sherpa_provider(profile: dict[str, Any], device: str) -> str:
+    explicit = os.environ.get("BYTECLI_SHERPA_ONNX_PROVIDER")
+    if explicit:
+        return explicit.strip()
+    provider = str(profile.get("provider", "cpu")).strip().lower()
+    if provider == "cuda":
+        return "cuda"
+    if provider == "auto":
+        return "cuda" if device == "cuda" else "cpu"
+    return provider or "cpu"
+
+
+def _sherpa_num_threads(profile: dict[str, Any]) -> int:
+    value = os.environ.get("BYTECLI_SHERPA_ONNX_NUM_THREADS")
+    if value:
+        return max(1, int(value))
+    return max(1, int(profile.get("num_threads", 2)))
+
+
+def _sherpa_language(env_value: Optional[str], profile_value: str) -> str:
+    language = (env_value if env_value is not None else profile_value).strip()
+    return "" if language.lower() == "auto" else language
+
+
+def _profile_bool(profile: dict[str, Any], key: str, default: bool) -> bool:
+    value = profile.get(key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _huggingface_cache_roots() -> list[str]:
     roots: list[str] = []
     hub_cache = os.environ.get("HUGGINGFACE_HUB_CACHE")
@@ -1019,6 +1265,24 @@ def _extract_text(result: Any) -> str:
                 parts.append(str(item))
         return "".join(parts).strip()
     return str(result).strip()
+
+
+def _extract_sherpa_text(result: Any) -> str:
+    if hasattr(result, "text"):
+        return str(result.text).strip()
+    if isinstance(result, str):
+        stripped = result.strip()
+        if stripped.startswith("{"):
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                return stripped
+            if isinstance(payload, dict):
+                return str(payload.get("text", "")).strip()
+        return stripped
+    if isinstance(result, dict):
+        return str(result.get("text", "")).strip()
+    return _extract_text(result)
 
 
 def _torch_dtype(torch_module, dtype_name: str):
