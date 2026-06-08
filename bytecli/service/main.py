@@ -265,6 +265,9 @@ def main() -> None:
         dbus_service.set_stop_callback(_stop_service)
         dbus_service.set_restart_callback(_restart_service)
         dbus_service.set_indicator_restart_callback(_refresh_indicator)
+        audio_manager.set_level_callback(
+            lambda level: GLib.idle_add(dbus_service.AudioLevelChanged, float(level))
+        )
 
         # 18. Dispatch EVT_INIT_SUCCESS *before* model loading so the
         #     indicator appears immediately and can show download progress.

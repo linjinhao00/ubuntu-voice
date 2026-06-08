@@ -83,6 +83,10 @@
 
     <signal name="TranscriptionStarted"/>
 
+    <signal name="AudioLevelChanged">
+      <arg name="level" type="d"/>
+    </signal>
+
     <signal name="ModelDownloadProgress">
       <arg name="percent" type="i"/>
       <arg name="message" type="s"/>

@@ -60,6 +60,7 @@ class IndicatorApp(Gtk.Application):
         self._dbus_client.subscribe_signal("RecordingStarted", self._on_recording_started)
         self._dbus_client.subscribe_signal("RecordingStopped", self._on_recording_stopped)
         self._dbus_client.subscribe_signal("TranscriptionStarted", self._on_transcription_started)
+        self._dbus_client.subscribe_signal("AudioLevelChanged", self._on_audio_level_changed)
         self._dbus_client.subscribe_signal("ModelDownloadProgress", self._on_model_download_progress)
 
         # Create the indicator window.
@@ -109,6 +110,16 @@ class IndicatorApp(Gtk.Application):
     ) -> None:
         if self._indicator_window is not None:
             self._indicator_window.set_state_transcribing()
+
+    def _on_audio_level_changed(
+        self, connection, sender, path, iface, signal_name, params
+    ) -> None:
+        if self._indicator_window is None or params is None:
+            return
+        unpacked = params.unpack()
+        if not unpacked:
+            return
+        self._indicator_window.update_audio_level(float(unpacked[0]))
 
     def _on_model_download_progress(
         self, connection, sender, path, iface, signal_name, params

@@ -200,23 +200,31 @@ window,
    Floating Indicator Pill
    =================================================================== */
 .indicator-pill {
-    background-color: @card_color;
-    border-radius: 20px;
-    border: 1px solid @border_color;
-    padding: 8px 16px;
+    background-color: alpha(#151515, 0.96);
+    border-radius: 999px;
+    border: 1px solid alpha(#FFFFFF, 0.12);
+    padding: 12px 18px;
+    min-height: 32px;
+    box-shadow: 0 12px 34px alpha(#000000, 0.42);
 }
 
 .indicator-pill-recording {
-    border-color: @primary_color;
+    border-color: alpha(@primary_color, 0.72);
+    background-color: alpha(#1A1510, 0.98);
 }
 
 .indicator-pill-transcribing {
-    border-color: @info_fg_color;
-    background-color: alpha(@info_fg_color, 0.12);
+    border-color: alpha(@info_fg_color, 0.68);
+    background-color: alpha(#131526, 0.98);
 }
 
 .indicator-pill-downloading {
-    border-color: @warning_fg_color;
+    border-color: alpha(@warning_fg_color, 0.68);
+}
+
+.indicator-waveform {
+    min-width: 96px;
+    min-height: 28px;
 }
 
 /* ===================================================================

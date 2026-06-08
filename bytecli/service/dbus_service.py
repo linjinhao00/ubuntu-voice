@@ -249,6 +249,11 @@ class ByteCLIDBusService(dbus.service.Object):
         """Emitted after recording capture ends and ASR inference begins."""
         logger.debug("Signal TranscriptionStarted()")
 
+    @dbus.service.signal(DBUS_INTERFACE, signature="d")
+    def AudioLevelChanged(self, level: float) -> None:
+        """Emitted while recording with a normalized audio level in [0, 1]."""
+        pass
+
     @dbus.service.signal(DBUS_INTERFACE, signature="is")
     def ModelDownloadProgress(self, percent: int, message: str) -> None:
         """Emitted during first-run model download with progress updates."""

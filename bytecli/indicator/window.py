@@ -27,7 +27,9 @@ from bytecli.shared.dbus_client import DBusClient
 logger = logging.getLogger(__name__)
 
 # Margin from the bottom edge of the screen.
-_BOTTOM_MARGIN = 48
+_BOTTOM_MARGIN = 92
+_PILL_HEIGHT = 56
+_WAVE_BAR_COUNT = 11
 
 
 class IndicatorWindow(Gtk.Window):
@@ -44,12 +46,15 @@ class IndicatorWindow(Gtk.Window):
         self._downloading = False
         self._transcribing = False
         self._pulse_on = False
+        self._audio_level = 0.0
+        self._wave_phase = 0.0
         self._timer_seconds = 0
         self._timer_source_id: Optional[int] = None
         self._pulse_source_id: Optional[int] = None
+        self._wave_source_id: Optional[int] = None
         self._leave_timeout_id: Optional[int] = None
         self._history_panel = None
-        self._indicator_geo: tuple[int, int, int, int] = (0, 0, 220, 40)
+        self._indicator_geo: tuple[int, int, int, int] = (0, 0, 280, _PILL_HEIGHT)
 
         # Window chrome.
         self.set_decorated(False)
@@ -70,7 +75,7 @@ class IndicatorWindow(Gtk.Window):
 
     def _build_ui(self) -> None:
         # Root box with the pill CSS class.
-        self._pill_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self._pill_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self._pill_box.add_css_class("indicator-pill")
         self._pill_box.set_margin_start(0)
         self._pill_box.set_margin_end(0)
@@ -81,6 +86,15 @@ class IndicatorWindow(Gtk.Window):
         self._dot.set_valign(Gtk.Align.CENTER)
         self._dot.set_draw_func(self._draw_dot)
         self._pill_box.append(self._dot)
+
+        # --- Live waveform (visible while recording) ---------------------
+        self._wave = Gtk.DrawingArea()
+        self._wave.add_css_class("indicator-waveform")
+        self._wave.set_size_request(96, 28)
+        self._wave.set_valign(Gtk.Align.CENTER)
+        self._wave.set_draw_func(self._draw_waveform)
+        self._wave.set_visible(False)
+        self._pill_box.append(self._wave)
 
         # --- Status text -------------------------------------------------
         self._status_label = Gtk.Label(label=i18n.t("indicator.idle", fallback="Idle"))
@@ -159,14 +173,43 @@ class IndicatorWindow(Gtk.Window):
         cr.arc(width / 2.0, height / 2.0, radius, 0, 2 * math.pi)
         cr.fill()
 
+    def _draw_waveform(
+        self,
+        area: Gtk.DrawingArea,
+        cr,
+        width: int,
+        height: int,
+    ) -> None:
+        """Draw voice-level bars while recording."""
+        level = max(0.0, min(1.0, self._audio_level))
+        bar_w = max(3.0, width / (_WAVE_BAR_COUNT * 2.6))
+        gap = (width - (_WAVE_BAR_COUNT * bar_w)) / max(1, _WAVE_BAR_COUNT - 1)
+        center_y = height / 2.0
+
+        for i in range(_WAVE_BAR_COUNT):
+            wave = 0.5 + 0.5 * math.sin(self._wave_phase + i * 0.78)
+            shaped = 0.18 + level * (0.28 + 0.72 * wave)
+            bar_h = max(4.0, min(height, shaped * height))
+            x = i * (bar_w + gap)
+            y = center_y - bar_h / 2.0
+
+            if level > 0.08:
+                cr.set_source_rgba(1.0, 0.518, 0.0, 0.92)
+            else:
+                cr.set_source_rgba(0.714, 1.0, 0.808, 0.42)
+            _rounded_rect(cr, x, y, bar_w, bar_h, bar_w / 2.0)
+            cr.fill()
+
     # ------------------------------------------------------------------
     # Positioning & X11 properties
     # ------------------------------------------------------------------
 
     def _on_realize(self, widget: Gtk.Widget) -> None:
-        """Set X11 window type to DOCK + ABOVE + STICKY and position the pill."""
+        """Set X11 window hints and position the pill."""
         GLib.idle_add(self._apply_x11_properties)
         GLib.idle_add(self._position_on_screen)
+        GLib.timeout_add(250, self._position_on_screen)
+        GLib.timeout_add(900, self._position_on_screen)
 
     def _apply_x11_properties(self) -> bool:
         """Use xprop to set the window type and state via the X11 window id."""
@@ -192,7 +235,7 @@ class IndicatorWindow(Gtk.Window):
                     "xprop",
                     "-id", str(xid),
                     "-f", "_NET_WM_WINDOW_TYPE", "32a",
-                    "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DOCK",
+                    "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_UTILITY",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -203,7 +246,7 @@ class IndicatorWindow(Gtk.Window):
                     "-id", str(xid),
                     "-f", "_NET_WM_STATE", "32a",
                     "-set", "_NET_WM_STATE",
-                    "_NET_WM_STATE_ABOVE,_NET_WM_STATE_STICKY",
+                    "_NET_WM_STATE_ABOVE,_NET_WM_STATE_STICKY,_NET_WM_STATE_SKIP_TASKBAR",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -232,18 +275,24 @@ class IndicatorWindow(Gtk.Window):
             nat_width = 220  # fallback
 
         x = geo.x + (geo.width - nat_width) // 2
-        y = geo.y + geo.height - _BOTTOM_MARGIN - 40  # 40px approx pill height
-        self._indicator_geo = (x, y, nat_width, 40)
+        y = geo.y + geo.height - _BOTTOM_MARGIN - _PILL_HEIGHT
+        self._indicator_geo = (x, y, nat_width, _PILL_HEIGHT)
 
         surface = self.get_surface()
+        moved = False
         if surface is not None:
             try:
                 from gi.repository import GdkX11
 
                 if isinstance(surface, GdkX11.X11Surface):
+                    xid = surface.get_xid()
                     surface.move(x, y)
+                    _move_x11_window(xid, x, y)
+                    moved = True
             except (ImportError, AttributeError):
                 pass
+        if not moved:
+            _move_indicator_window_by_name(x, y)
 
         return False  # do not repeat
 
@@ -319,10 +368,14 @@ class IndicatorWindow(Gtk.Window):
         self._transcribing = False
         self._stop_timer()
         self._stop_pulse()
+        self._stop_wave()
+        self._audio_level = 0.0
         self._clear_state_classes()
         self._status_label.set_text(i18n.t("indicator.idle", fallback="Idle"))
         self._timer_label.set_visible(False)
+        self._wave.set_visible(False)
         self._dot.queue_draw()
+        self._wave.queue_draw()
         self._queue_reposition()
 
     def set_state_downloading(self, percent: int, message: str) -> None:
@@ -332,6 +385,8 @@ class IndicatorWindow(Gtk.Window):
         self._transcribing = False
         self._stop_timer()
         self._stop_pulse()
+        self._stop_wave()
+        self._audio_level = 0.0
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-downloading")
 
@@ -344,7 +399,9 @@ class IndicatorWindow(Gtk.Window):
             self._status_label.set_text("Loading model...")
 
         self._timer_label.set_visible(False)
+        self._wave.set_visible(False)
         self._dot.queue_draw()
+        self._wave.queue_draw()
         self._queue_reposition()
 
     def set_state_recording(self) -> None:
@@ -354,13 +411,18 @@ class IndicatorWindow(Gtk.Window):
         self._stop_pulse()
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-recording")
+        self._audio_level = 0.0
+        self._wave_phase = 0.0
         self._timer_seconds = 0
         self._timer_label.set_text("00:00")
         self._timer_label.set_visible(True)
+        self._wave.set_visible(True)
         self._status_label.set_text(i18n.t("indicator.recording", fallback="Recording"))
         self._dot.queue_draw()
+        self._wave.queue_draw()
         self._queue_reposition()
         self._start_timer()
+        self._start_wave()
 
     def set_state_transcribing(self) -> None:
         """Show the post-recording ASR inference state."""
@@ -368,15 +430,24 @@ class IndicatorWindow(Gtk.Window):
         self._downloading = False
         self._transcribing = True
         self._stop_timer()
+        self._stop_wave()
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-transcribing")
         self._timer_label.set_visible(False)
+        self._wave.set_visible(False)
         self._status_label.set_text(
             i18n.t("indicator.transcribing", fallback="Transcribing...")
         )
         self._start_pulse()
         self._dot.queue_draw()
         self._queue_reposition()
+
+    def update_audio_level(self, level: float) -> None:
+        if not self._recording:
+            return
+        clamped = max(0.0, min(1.0, float(level)))
+        self._audio_level = (self._audio_level * 0.58) + (clamped * 0.42)
+        self._wave.queue_draw()
 
     # ------------------------------------------------------------------
     # Timer
@@ -407,6 +478,24 @@ class IndicatorWindow(Gtk.Window):
             GLib.source_remove(self._pulse_source_id)
             self._pulse_source_id = None
         self._pulse_on = False
+
+    def _start_wave(self) -> None:
+        self._stop_wave()
+        self._wave_source_id = GLib.timeout_add(42, self._animate_wave)
+
+    def _stop_wave(self) -> None:
+        if self._wave_source_id is not None:
+            GLib.source_remove(self._wave_source_id)
+            self._wave_source_id = None
+
+    def _animate_wave(self) -> bool:
+        if not self._recording:
+            self._wave_source_id = None
+            return False
+        self._wave_phase += 0.34 + (self._audio_level * 0.28)
+        self._audio_level *= 0.94
+        self._wave.queue_draw()
+        return True
 
     def _pulse(self) -> bool:
         if not self._transcribing:
@@ -440,3 +529,44 @@ def _apply_font_size(widget: Gtk.Widget, size_px: int) -> None:
     widget.get_style_context().add_provider(
         provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
     )
+
+
+def _rounded_rect(cr, x: float, y: float, width: float, height: float, radius: float) -> None:
+    radius = min(radius, width / 2.0, height / 2.0)
+    cr.new_sub_path()
+    cr.arc(x + width - radius, y + radius, radius, -math.pi / 2.0, 0)
+    cr.arc(x + width - radius, y + height - radius, radius, 0, math.pi / 2.0)
+    cr.arc(x + radius, y + height - radius, radius, math.pi / 2.0, math.pi)
+    cr.arc(x + radius, y + radius, radius, math.pi, 3.0 * math.pi / 2.0)
+    cr.close_path()
+
+
+def _move_x11_window(xid: int, x: int, y: int) -> None:
+    try:
+        subprocess.Popen(
+            ["xdotool", "windowmove", str(xid), str(x), str(y)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        logger.debug("xdotool not found; relying on GDK window move.")
+
+
+def _move_indicator_window_by_name(x: int, y: int) -> None:
+    try:
+        subprocess.Popen(
+            [
+                "xdotool",
+                "search",
+                "--name",
+                "ByteCLI Indicator",
+                "windowmove",
+                "%@",
+                str(x),
+                str(y),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        logger.debug("xdotool not found; cannot move indicator by title.")

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
@@ -40,10 +41,16 @@ class AudioManager:
         self._hotplug_running = False
         self._pulse_hotplug = None  # pulsectl.Pulse instance for events
         self._last_device_info = RecordingDeviceInfo(None, None, None, False)
+        self._level_callback: Optional[Callable[[float], None]] = None
+        self._last_level_emit_ts = 0.0
 
     @property
     def last_device_info(self) -> RecordingDeviceInfo:
         return self._last_device_info
+
+    def set_level_callback(self, callback: Optional[Callable[[float], None]]) -> None:
+        """Set a callback for normalized recording level updates."""
+        self._level_callback = callback
 
     # ------------------------------------------------------------------
     # Device enumeration
@@ -104,6 +111,7 @@ class AudioManager:
             with self._lock:
                 if self._recording:
                     self._chunks.append(indata.copy())
+            self._emit_level(indata)
 
         def _open_stream(
             selected_device: Optional[object],
@@ -177,6 +185,28 @@ class AudioManager:
                 self._recording = False
             logger.error("Failed to start recording: %s", exc)
             raise
+
+    def _emit_level(self, indata: np.ndarray) -> None:
+        callback = self._level_callback
+        if callback is None:
+            return
+
+        now = time.monotonic()
+        if now - self._last_level_emit_ts < 0.045:
+            return
+        self._last_level_emit_ts = now
+
+        try:
+            samples = np.asarray(indata, dtype=np.float32).reshape(-1)
+            if samples.size == 0:
+                level = 0.0
+            else:
+                rms = float(np.sqrt(np.mean(np.square(samples))))
+                # Map quiet speech into visible motion while clipping loud peaks.
+                level = min(1.0, max(0.0, rms / 0.09))
+            callback(level)
+        except Exception as exc:
+            logger.debug("Audio level callback failed: %s", exc)
 
     @staticmethod
     def _resolve_input_device(sd, device_id: Optional[str]) -> tuple[Optional[object], Optional[str]]:
