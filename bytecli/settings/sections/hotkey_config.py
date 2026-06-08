@@ -1,5 +1,5 @@
 """
-HotkeyConfigSection -- displays the fixed F8 hotkey binding.
+HotkeyConfigSection -- displays the fixed Alt hotkey binding.
 
 The hotkey is not user-configurable; this section simply shows the
 current binding as a read-only label.
@@ -18,7 +18,7 @@ from bytecli.settings.widgets.section_card import SectionCard
 
 
 class HotkeyConfigSection(Gtk.Box):
-    """Read-only display of the fixed F8 hotkey."""
+    """Read-only display of the fixed Alt hotkey."""
 
     def __init__(self, **_kwargs) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -38,7 +38,7 @@ class HotkeyConfigSection(Gtk.Box):
         self._trigger_label.set_halign(Gtk.Align.START)
         row.append(self._trigger_label)
 
-        self._value_label = Gtk.Label(label="F8")
+        self._value_label = Gtk.Label(label="Alt")
         self._value_label.add_css_class("mono")
         self._value_label.add_css_class("font-semibold")
         self._value_label.set_halign(Gtk.Align.START)
@@ -54,4 +54,4 @@ class HotkeyConfigSection(Gtk.Box):
         self._trigger_label.set_text(
             i18n.t("hotkey.trigger_key", fallback="Trigger Key:")
         )
-        self._value_label.set_text("F8")
+        self._value_label.set_text("Alt")

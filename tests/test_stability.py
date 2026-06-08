@@ -201,6 +201,25 @@ class TestConfigManager:
         errors = mgr.validate(good)
         assert "hotkey.keys" not in errors
 
+    def test_validate_single_modifier_hotkey(self, tmp_path):
+        mgr = self._make_manager(str(tmp_path))
+        good = copy.deepcopy(DEFAULT_CONFIG)
+        good["hotkey"] = {"keys": ["Alt"]}
+        errors = mgr.validate(good)
+        assert "hotkey.keys" not in errors
+
+    def test_load_migrates_fixed_hotkey_to_default(self, tmp_path):
+        config_file = os.path.join(str(tmp_path), "config.json")
+        old_config = copy.deepcopy(DEFAULT_CONFIG)
+        old_config["hotkey"] = {"keys": ["F8"]}
+        with open(config_file, "w") as f:
+            json.dump(old_config, f)
+
+        mgr = ConfigManager(config_file=config_file)
+        config = mgr.load()
+
+        assert config["hotkey"]["keys"] == DEFAULT_CONFIG["hotkey"]["keys"]
+
     def test_validate_history_max_entries_boundary(self, tmp_path):
         mgr = self._make_manager(str(tmp_path))
         bad = copy.deepcopy(DEFAULT_CONFIG)

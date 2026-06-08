@@ -371,7 +371,7 @@ DEFAULT_CONFIG: dict = {
     "device": "gpu",
     "audio_input": "auto",
     "hotkey": {
-        "keys": ["F8"],
+        "keys": ["Alt"],
     },
     "language": "en",
     "auto_start": False,

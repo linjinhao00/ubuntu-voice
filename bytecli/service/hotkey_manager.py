@@ -47,6 +47,15 @@ _MOD_MAP: dict[str, int] = {
     "meta": X.Mod4Mask,
 }
 
+_MODIFIER_KEYSYMS: dict[str, tuple[str, ...]] = {
+    "ctrl": ("Control_L", "Control_R"),
+    "control": ("Control_L", "Control_R"),
+    "alt": ("Alt_L", "Alt_R"),
+    "shift": ("Shift_L", "Shift_R"),
+    "super": ("Super_L", "Super_R"),
+    "meta": ("Meta_L", "Meta_R"),
+}
+
 
 class HotkeyManager:
     """Register / unregister a global hotkey via X11 grabs."""
@@ -61,6 +70,7 @@ class HotkeyManager:
         self._keys: list[str] = []
         self._modifier_mask: int = 0
         self._keycode: int = 0
+        self._keycodes: list[int] = []
 
         # Callback.
         self._on_press: Optional[Callable[[], None]] = None
@@ -92,7 +102,8 @@ class HotkeyManager:
         self._root = self._display.screen().root
 
         self._keys = keys_list
-        self._modifier_mask, self._keycode = self._parse_keys(keys_list)
+        self._modifier_mask, self._keycodes = self._parse_keys(keys_list)
+        self._keycode = self._keycodes[0] if self._keycodes else 0
 
         if self._keycode == 0:
             raise ValueError(f"Could not resolve keysym for keys: {keys_list}")
@@ -105,14 +116,15 @@ class HotkeyManager:
         self._display.set_error_handler(_grab_error_handler)
 
         # Grab with every lock-mask combination.
-        for extra_mask in _LOCK_MASKS:
-            self._root.grab_key(
-                self._keycode,
-                self._modifier_mask | extra_mask,
-                False,
-                X.GrabModeAsync,
-                X.GrabModeAsync,
-            )
+        for keycode in self._keycodes:
+            for extra_mask in _LOCK_MASKS:
+                self._root.grab_key(
+                    keycode,
+                    self._modifier_mask | extra_mask,
+                    False,
+                    X.GrabModeAsync,
+                    X.GrabModeAsync,
+                )
 
         self._display.sync()
         self._display.set_error_handler(None)
@@ -136,11 +148,12 @@ class HotkeyManager:
 
         if self._root is not None and self._keycode:
             try:
-                for extra_mask in _LOCK_MASKS:
-                    self._root.ungrab_key(
-                        self._keycode,
-                        self._modifier_mask | extra_mask,
-                    )
+                for keycode in self._keycodes:
+                    for extra_mask in _LOCK_MASKS:
+                        self._root.ungrab_key(
+                            keycode,
+                            self._modifier_mask | extra_mask,
+                        )
                 self._display.flush()
                 logger.debug("Hotkey unregistered.")
             except Exception as exc:
@@ -155,6 +168,7 @@ class HotkeyManager:
             self._root = None
 
         self._keycode = 0
+        self._keycodes = []
         self._modifier_mask = 0
 
         if self._thread is not None:
@@ -171,11 +185,12 @@ class HotkeyManager:
         if self._root is None or self._keycode == 0:
             return
         try:
-            for extra_mask in _LOCK_MASKS:
-                self._root.ungrab_key(
-                    self._keycode,
-                    self._modifier_mask | extra_mask,
-                )
+            for keycode in self._keycodes:
+                for extra_mask in _LOCK_MASKS:
+                    self._root.ungrab_key(
+                        keycode,
+                        self._modifier_mask | extra_mask,
+                    )
             self._display.sync()
             logger.debug("Hotkey temporarily ungrabbed.")
         except Exception as exc:
@@ -186,14 +201,15 @@ class HotkeyManager:
         if self._root is None or self._keycode == 0:
             return
         try:
-            for extra_mask in _LOCK_MASKS:
-                self._root.grab_key(
-                    self._keycode,
-                    self._modifier_mask | extra_mask,
-                    False,
-                    X.GrabModeAsync,
-                    X.GrabModeAsync,
-                )
+            for keycode in self._keycodes:
+                for extra_mask in _LOCK_MASKS:
+                    self._root.grab_key(
+                        keycode,
+                        self._modifier_mask | extra_mask,
+                        False,
+                        X.GrabModeAsync,
+                        X.GrabModeAsync,
+                    )
             self._display.flush()
             logger.debug("Hotkey re-grabbed.")
         except Exception as exc:
@@ -325,13 +341,18 @@ class HotkeyManager:
     # Internal: key parsing
     # ------------------------------------------------------------------
 
-    def _parse_keys(self, keys_list: List[str]) -> tuple[int, int]:
-        """Convert human-readable key names to (modifier_mask, keycode).
+    def _parse_keys(self, keys_list: List[str]) -> tuple[int, list[int]]:
+        """Convert human-readable key names to (modifier_mask, keycodes).
 
         The last non-modifier key is treated as the primary key.
         """
         modifier_mask = 0
         primary_key: Optional[str] = None
+
+        if len(keys_list) == 1:
+            modifier_key = keys_list[0].lower()
+            if modifier_key in _MODIFIER_KEYSYMS:
+                return (0, self._keycodes_for_keysyms(_MODIFIER_KEYSYMS[modifier_key]))
 
         for key in keys_list:
             lower = key.lower()
@@ -341,7 +362,7 @@ class HotkeyManager:
                 primary_key = key
 
         if primary_key is None:
-            return (0, 0)
+            return (0, [])
 
         keysym = XK.string_to_keysym(primary_key)
         if keysym == 0:
@@ -349,7 +370,19 @@ class HotkeyManager:
             keysym = XK.string_to_keysym(primary_key.lower())
         if keysym == 0:
             logger.error("Cannot resolve keysym for '%s'.", primary_key)
-            return (modifier_mask, 0)
+            return (modifier_mask, [])
 
         keycode = self._display.keysym_to_keycode(keysym)
-        return (modifier_mask, keycode)
+        return (modifier_mask, [keycode] if keycode else [])
+
+    def _keycodes_for_keysyms(self, keysyms: tuple[str, ...]) -> list[int]:
+        keycodes: list[int] = []
+        for keysym_name in keysyms:
+            keysym = XK.string_to_keysym(keysym_name)
+            if keysym == 0:
+                logger.error("Cannot resolve keysym for '%s'.", keysym_name)
+                continue
+            keycode = self._display.keysym_to_keycode(keysym)
+            if keycode and keycode not in keycodes:
+                keycodes.append(keycode)
+        return keycodes

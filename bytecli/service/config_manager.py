@@ -27,6 +27,10 @@ def _is_function_key(key: str) -> bool:
     return 1 <= int(normalised[1:]) <= 12
 
 
+def _is_modifier_key(key: str) -> bool:
+    return key.lower() in {"alt", "ctrl", "control", "shift", "super", "meta"}
+
+
 class ConfigManager:
     """Manages the ByteCLI user configuration on disk."""
 
@@ -83,6 +87,9 @@ class ConfigManager:
             default_hotkey = self.get_default_config()["hotkey"]
             default_hotkey.update(data["hotkey"])
             merged["hotkey"] = default_hotkey
+        # The packaged application exposes a fixed trigger key, so migrate
+        # older configs such as F8 to the current default automatically.
+        merged["hotkey"] = self.get_default_config()["hotkey"]
         if "remote_asr" in data and isinstance(data["remote_asr"], dict):
             default_remote = self.get_default_config()["remote_asr"]
             default_remote.update(data["remote_asr"])
@@ -162,6 +169,7 @@ class ConfigManager:
                 or not all(isinstance(k, str) and k for k in keys)
                 or not (
                     (len(keys) == 1 and _is_function_key(keys[0]))
+                    or (len(keys) == 1 and _is_modifier_key(keys[0]))
                     or (2 <= len(keys) <= 3)
                 )
             ):
