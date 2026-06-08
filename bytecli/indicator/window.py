@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _BOTTOM_MARGIN = 92
 _PILL_WIDTH = 160
 _PILL_HEIGHT = 40
-_WAVE_BAR_COUNT = 7
+_WAVE_BAR_COUNT = 11
 _POINTER_POLL_MS = 5
 _VISIBILITY_GUARD_MS = 1500
 _CLICK_DRAG_THRESHOLD = 6
@@ -145,6 +145,11 @@ class IndicatorWindow(Gtk.Window):
         self._timer_label.set_visible(False)
         self._pill_box.append(self._timer_label)
 
+        self._right_spacer = Gtk.Box()
+        self._right_spacer.set_size_request(7, 1)
+        self._right_spacer.set_visible(True)
+        self._pill_box.append(self._right_spacer)
+
         # --- Separator (visible on hover) --------------------------------
         self._separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
         self._separator.set_size_request(1, 16)
@@ -199,7 +204,7 @@ class IndicatorWindow(Gtk.Window):
         elif self._downloading:
             cr.set_source_rgba(1.0, 0.518, 0.0, 1.0)    # #FF8400 (warning orange)
         else:
-            cr.set_source_rgba(0.722, 0.725, 0.714, 1.0)  # #B8B9B6
+            cr.set_source_rgba(0.36, 0.58, 1.0, 1.0)  # blue idle marker
         radius = min(width, height) / 2.0
         cr.arc(width / 2.0, height / 2.0, radius, 0, 2 * math.pi)
         cr.fill()
@@ -216,12 +221,12 @@ class IndicatorWindow(Gtk.Window):
         has_recent_level = (time.monotonic() - self._last_audio_level_ts) < 0.45
         fallback_level = 0.18 + 0.07 * (0.5 + 0.5 * math.sin(self._wave_phase * 0.7))
         visual_level = max(level, fallback_level if self._recording and not has_recent_level else 0.0)
-        bar_w = max(3.0, width / (_WAVE_BAR_COUNT * 2.6))
+        bar_w = max(2.2, width / (_WAVE_BAR_COUNT * 3.1))
         gap = (width - (_WAVE_BAR_COUNT * bar_w)) / max(1, _WAVE_BAR_COUNT - 1)
         center_y = height / 2.0
 
         for i in range(_WAVE_BAR_COUNT):
-            wave = 0.5 + 0.5 * math.sin(self._wave_phase + i * 0.78)
+            wave = 0.5 + 0.5 * math.sin(self._wave_phase + i * 0.54)
             shaped = 0.14 + visual_level * (0.24 + 0.76 * wave)
             bar_h = max(4.0, min(height, shaped * height))
             x = i * (bar_w + gap)
@@ -574,7 +579,8 @@ class IndicatorWindow(Gtk.Window):
         self._stop_wave()
         self._audio_level = 0.0
         self._clear_state_classes()
-        self._dot.set_visible(False)
+        self._dot.set_visible(True)
+        self._right_spacer.set_visible(True)
         self._status_label.set_visible(True)
         self._status_label.set_text("空闲")
         self._timer_label.set_visible(False)
@@ -595,6 +601,7 @@ class IndicatorWindow(Gtk.Window):
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-downloading")
         self._dot.set_visible(True)
+        self._right_spacer.set_visible(False)
         self._status_label.set_visible(True)
 
         if percent < 0:
@@ -626,6 +633,7 @@ class IndicatorWindow(Gtk.Window):
         self._timer_label.set_visible(True)
         self._wave.set_visible(True)
         self._dot.set_visible(False)
+        self._right_spacer.set_visible(False)
         self._status_label.set_visible(False)
         self._dot.queue_draw()
         self._wave.queue_draw()
@@ -643,6 +651,7 @@ class IndicatorWindow(Gtk.Window):
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-transcribing")
         self._dot.set_visible(False)
+        self._right_spacer.set_visible(False)
         self._status_label.set_visible(True)
         self._timer_label.set_visible(False)
         self._wave.set_visible(False)
