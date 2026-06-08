@@ -19,7 +19,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk, Pango
 
 from bytecli.i18n import i18n
 from bytecli.shared.dbus_client import DBusClient
@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 # Margin from the bottom edge of the screen.
 _BOTTOM_MARGIN = 92
-_PILL_HEIGHT = 56
+_PILL_WIDTH = 300
+_PILL_HEIGHT = 44
 _WAVE_BAR_COUNT = 11
 
 
@@ -62,6 +63,8 @@ class IndicatorWindow(Gtk.Window):
         self.set_can_focus(False)
         self.set_focusable(False)
         self.set_title("ByteCLI Indicator")
+        self.add_css_class("indicator-window")
+        self.set_default_size(_PILL_WIDTH, _PILL_HEIGHT)
 
         # Build UI.
         self._build_ui()
@@ -77,6 +80,7 @@ class IndicatorWindow(Gtk.Window):
         # Root box with the pill CSS class.
         self._pill_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self._pill_box.add_css_class("indicator-pill")
+        self._pill_box.set_size_request(_PILL_WIDTH, _PILL_HEIGHT)
         self._pill_box.set_margin_start(0)
         self._pill_box.set_margin_end(0)
 
@@ -90,10 +94,10 @@ class IndicatorWindow(Gtk.Window):
         # --- Live waveform (visible while recording) ---------------------
         self._wave = Gtk.DrawingArea()
         self._wave.add_css_class("indicator-waveform")
-        self._wave.set_size_request(96, 28)
+        self._wave.set_size_request(84, 22)
         self._wave.set_valign(Gtk.Align.CENTER)
         self._wave.set_draw_func(self._draw_waveform)
-        self._wave.set_visible(False)
+        self._wave.set_opacity(0.0)
         self._pill_box.append(self._wave)
 
         # --- Status text -------------------------------------------------
@@ -101,6 +105,10 @@ class IndicatorWindow(Gtk.Window):
         self._status_label.add_css_class("mono")
         self._status_label.add_css_class("font-medium")
         self._status_label.set_valign(Gtk.Align.CENTER)
+        self._status_label.set_size_request(96, -1)
+        self._status_label.set_width_chars(10)
+        self._status_label.set_max_width_chars(12)
+        self._status_label.set_ellipsize(Pango.EllipsizeMode.END)
         # 13px via inline style
         _apply_font_size(self._status_label, 13)
         self._pill_box.append(self._status_label)
@@ -110,8 +118,9 @@ class IndicatorWindow(Gtk.Window):
         self._timer_label.add_css_class("mono")
         self._timer_label.add_css_class("text-muted")
         self._timer_label.set_valign(Gtk.Align.CENTER)
+        self._timer_label.set_size_request(44, -1)
         _apply_font_size(self._timer_label, 13)
-        self._timer_label.set_visible(False)
+        self._timer_label.set_opacity(0.0)
         self._pill_box.append(self._timer_label)
 
         # --- Separator (visible on hover) --------------------------------
@@ -269,11 +278,7 @@ class IndicatorWindow(Gtk.Window):
         monitor = monitors.get_item(0)
         geo = monitor.get_geometry()
 
-        # The natural size of the pill.
-        nat_width = self.get_preferred_size()[1].width
-        if nat_width <= 0:
-            nat_width = 220  # fallback
-
+        nat_width = _PILL_WIDTH
         x = geo.x + (geo.width - nat_width) // 2
         y = geo.y + geo.height - _BOTTOM_MARGIN - _PILL_HEIGHT
         self._indicator_geo = (x, y, nat_width, _PILL_HEIGHT)
@@ -372,8 +377,8 @@ class IndicatorWindow(Gtk.Window):
         self._audio_level = 0.0
         self._clear_state_classes()
         self._status_label.set_text(i18n.t("indicator.idle", fallback="Idle"))
-        self._timer_label.set_visible(False)
-        self._wave.set_visible(False)
+        self._timer_label.set_opacity(0.0)
+        self._wave.set_opacity(0.0)
         self._dot.queue_draw()
         self._wave.queue_draw()
         self._queue_reposition()
@@ -398,8 +403,8 @@ class IndicatorWindow(Gtk.Window):
         else:
             self._status_label.set_text("Loading model...")
 
-        self._timer_label.set_visible(False)
-        self._wave.set_visible(False)
+        self._timer_label.set_opacity(0.0)
+        self._wave.set_opacity(0.0)
         self._dot.queue_draw()
         self._wave.queue_draw()
         self._queue_reposition()
@@ -415,8 +420,8 @@ class IndicatorWindow(Gtk.Window):
         self._wave_phase = 0.0
         self._timer_seconds = 0
         self._timer_label.set_text("00:00")
-        self._timer_label.set_visible(True)
-        self._wave.set_visible(True)
+        self._timer_label.set_opacity(1.0)
+        self._wave.set_opacity(1.0)
         self._status_label.set_text(i18n.t("indicator.recording", fallback="Recording"))
         self._dot.queue_draw()
         self._wave.queue_draw()
@@ -433,8 +438,8 @@ class IndicatorWindow(Gtk.Window):
         self._stop_wave()
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-transcribing")
-        self._timer_label.set_visible(False)
-        self._wave.set_visible(False)
+        self._timer_label.set_opacity(0.0)
+        self._wave.set_opacity(0.0)
         self._status_label.set_text(
             i18n.t("indicator.transcribing", fallback="Transcribing...")
         )

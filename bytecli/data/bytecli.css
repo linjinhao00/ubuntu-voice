@@ -199,13 +199,19 @@ window,
 /* ===================================================================
    Floating Indicator Pill
    =================================================================== */
+.indicator-window,
+window.indicator-window {
+    background-color: transparent;
+}
+
 .indicator-pill {
     background-color: alpha(#151515, 0.96);
-    border-radius: 999px;
+    border-radius: 22px;
     border: 1px solid alpha(#FFFFFF, 0.12);
-    padding: 12px 18px;
-    min-height: 32px;
-    box-shadow: 0 12px 34px alpha(#000000, 0.42);
+    padding: 7px 14px;
+    min-width: 272px;
+    min-height: 30px;
+    box-shadow: 0 8px 24px alpha(#000000, 0.36);
 }
 
 .indicator-pill-recording {
@@ -223,8 +229,8 @@ window,
 }
 
 .indicator-waveform {
-    min-width: 96px;
-    min-height: 28px;
+    min-width: 84px;
+    min-height: 22px;
 }
 
 /* ===================================================================
