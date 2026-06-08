@@ -8,6 +8,7 @@ device enumeration and hot-plug monitoring.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import time
@@ -202,8 +203,9 @@ class AudioManager:
                 level = 0.0
             else:
                 rms = float(np.sqrt(np.mean(np.square(samples))))
-                # Map quiet speech into visible motion while clipping loud peaks.
-                level = min(1.0, max(0.0, rms / 0.09))
+                # Boost quiet speech into visible motion while keeping ambient
+                # room noise near zero.
+                level = min(1.0, max(0.0, math.sqrt(max(0.0, rms - 0.0015) / 0.04)))
             callback(level)
         except Exception as exc:
             logger.debug("Audio level callback failed: %s", exc)

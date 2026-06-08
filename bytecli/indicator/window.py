@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import subprocess
+import time
 from typing import Optional
 
 import gi
@@ -54,6 +55,7 @@ class IndicatorWindow(Gtk.Window):
         self._transcribing = False
         self._pulse_on = False
         self._audio_level = 0.0
+        self._last_audio_level_ts = 0.0
         self._wave_phase = 0.0
         self._timer_seconds = 0
         self._timer_source_id: Optional[int] = None
@@ -211,18 +213,21 @@ class IndicatorWindow(Gtk.Window):
     ) -> None:
         """Draw voice-level bars while recording."""
         level = max(0.0, min(1.0, self._audio_level))
+        has_recent_level = (time.monotonic() - self._last_audio_level_ts) < 0.45
+        fallback_level = 0.18 + 0.07 * (0.5 + 0.5 * math.sin(self._wave_phase * 0.7))
+        visual_level = max(level, fallback_level if self._recording and not has_recent_level else 0.0)
         bar_w = max(3.0, width / (_WAVE_BAR_COUNT * 2.6))
         gap = (width - (_WAVE_BAR_COUNT * bar_w)) / max(1, _WAVE_BAR_COUNT - 1)
         center_y = height / 2.0
 
         for i in range(_WAVE_BAR_COUNT):
             wave = 0.5 + 0.5 * math.sin(self._wave_phase + i * 0.78)
-            shaped = 0.18 + level * (0.28 + 0.72 * wave)
+            shaped = 0.14 + visual_level * (0.24 + 0.76 * wave)
             bar_h = max(4.0, min(height, shaped * height))
             x = i * (bar_w + gap)
             y = center_y - bar_h / 2.0
 
-            if level > 0.08:
+            if visual_level > 0.10:
                 cr.set_source_rgba(1.0, 0.518, 0.0, 0.92)
             else:
                 cr.set_source_rgba(0.714, 1.0, 0.808, 0.42)
@@ -614,6 +619,7 @@ class IndicatorWindow(Gtk.Window):
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-recording")
         self._audio_level = 0.0
+        self._last_audio_level_ts = 0.0
         self._wave_phase = 0.0
         self._timer_seconds = 0
         self._timer_label.set_text("00:00")
@@ -649,6 +655,7 @@ class IndicatorWindow(Gtk.Window):
         if not self._recording:
             return
         clamped = max(0.0, min(1.0, float(level)))
+        self._last_audio_level_ts = time.monotonic()
         self._audio_level = (self._audio_level * 0.58) + (clamped * 0.42)
         self._wave.queue_draw()
 
@@ -696,7 +703,7 @@ class IndicatorWindow(Gtk.Window):
             self._wave_source_id = None
             return False
         self._wave_phase += 0.34 + (self._audio_level * 0.28)
-        self._audio_level *= 0.94
+        self._audio_level *= 0.965
         self._wave.queue_draw()
         return True
 
