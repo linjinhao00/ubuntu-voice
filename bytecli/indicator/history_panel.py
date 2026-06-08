@@ -30,6 +30,7 @@ from bytecli.shared.dbus_client import DBusClient
 logger = logging.getLogger(__name__)
 
 _PANEL_WIDTH = 300
+_PANEL_GAP = 8
 _MAX_ENTRIES = 20
 _EMPTY_HEIGHT = 120
 
@@ -127,6 +128,7 @@ class HistoryPanel(Gtk.Window):
     def _on_realize(self, widget: Gtk.Widget) -> None:
         GLib.idle_add(self._apply_x11_properties)
         GLib.idle_add(self._position_above_indicator)
+        GLib.timeout_add(120, self._position_above_indicator)
 
     def _apply_x11_properties(self) -> bool:
         surface = self.get_surface()
@@ -167,31 +169,60 @@ class HistoryPanel(Gtk.Window):
         display = Gdk.Display.get_default()
         if display is None:
             return False
-        monitors = display.get_monitors()
-        if monitors.get_n_items() == 0:
-            return False
-
-        monitor = monitors.get_item(0)
-        geo = monitor.get_geometry()
 
         nat_height = self.get_preferred_size()[1].height
         if nat_height <= 0:
             nat_height = 300
 
-        x = geo.x + (geo.width - _PANEL_WIDTH) // 2
-        # Indicator is 48px from bottom + ~40px tall. Panel goes above that.
-        y = geo.y + geo.height - 48 - 40 - nat_height - 2
+        indicator_geometry = _get_x11_window_geometry(self._parent_window.get_xid())
+        if indicator_geometry is not None:
+            indicator_x, indicator_y, indicator_w, indicator_h = indicator_geometry
+        else:
+            monitors = display.get_monitors()
+            if monitors.get_n_items() == 0:
+                return False
+            monitor = monitors.get_item(0)
+            geo = monitor.get_geometry()
+            try:
+                indicator_x, indicator_y, indicator_w, indicator_h = (
+                    self._parent_window.get_indicator_geometry()
+                )
+            except AttributeError:
+                indicator_w = 160
+                indicator_h = 40
+                indicator_x = geo.x + (geo.width - indicator_w) // 2
+                indicator_y = geo.y + geo.height - indicator_h - 92
+
+        screen_x, screen_y, screen_w, screen_h = _get_virtual_screen_geometry(display)
+        x = indicator_x + (indicator_w - _PANEL_WIDTH) // 2
+        x = max(screen_x, min(x, screen_x + screen_w - _PANEL_WIDTH))
+
+        y = indicator_y - nat_height - _PANEL_GAP
+        if y < screen_y:
+            y = indicator_y + indicator_h + _PANEL_GAP
+        y = max(screen_y, min(y, screen_y + screen_h - nat_height))
 
         surface = self.get_surface()
+        moved = False
         if surface is not None:
             try:
                 from gi.repository import GdkX11
 
                 if isinstance(surface, GdkX11.X11Surface):
                     surface.move(x, y)
+                    _move_x11_window(surface.get_xid(), x, y)
+                    moved = True
             except (ImportError, AttributeError):
                 pass
+        if not moved:
+            _move_history_window_by_name(x, y)
+        else:
+            _move_history_window_by_name(x, y)
         return False
+
+    def reposition(self) -> None:
+        GLib.idle_add(self._position_above_indicator)
+        GLib.timeout_add(120, self._position_above_indicator)
 
     # ------------------------------------------------------------------
     # Pointer polling (replaces EventControllerMotion)
@@ -439,3 +470,107 @@ def _apply_font_size(widget: Gtk.Widget, size_px: int) -> None:
     widget.get_style_context().add_provider(
         provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
     )
+
+
+def _move_x11_window(xid: int, x: int, y: int) -> None:
+    try:
+        subprocess.Popen(
+            ["xdotool", "windowmove", str(xid), str(x), str(y)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        logger.debug("xdotool not found; relying on GDK window move.")
+
+
+def _move_history_window_by_name(x: int, y: int) -> None:
+    try:
+        subprocess.Popen(
+            [
+                "xdotool",
+                "search",
+                "--name",
+                "ByteCLI History",
+                "windowmove",
+                "%@",
+                str(x),
+                str(y),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        logger.debug("xdotool not found; cannot move history window by title.")
+
+
+def _get_x11_window_geometry(xid: int) -> Optional[tuple[int, int, int, int]]:
+    if not xid:
+        return None
+    try:
+        output = subprocess.check_output(
+            ["xdotool", "getwindowgeometry", "--shell", str(xid)],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=0.5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+    values: dict[str, int] = {}
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        if key not in {"X", "Y", "WIDTH", "HEIGHT"}:
+            continue
+        try:
+            values[key] = int(raw_value)
+        except ValueError:
+            return None
+
+    if not {"X", "Y", "WIDTH", "HEIGHT"}.issubset(values):
+        return None
+    return values["X"], values["Y"], values["WIDTH"], values["HEIGHT"]
+
+
+def _get_virtual_screen_geometry(display: Gdk.Display) -> tuple[int, int, int, int]:
+    try:
+        output = subprocess.check_output(
+            ["xrandr"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=0.5,
+        )
+        for line in output.splitlines():
+            if " current " not in line:
+                continue
+            parts = line.split()
+            current_index = parts.index("current")
+            return (
+                0,
+                0,
+                int(parts[current_index + 1]),
+                int(parts[current_index + 3].rstrip(",")),
+            )
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError, IndexError):
+        pass
+
+    monitors = display.get_monitors()
+    if monitors.get_n_items() == 0:
+        return 0, 0, 1920, 1080
+
+    min_x: Optional[int] = None
+    min_y: Optional[int] = None
+    max_x: Optional[int] = None
+    max_y: Optional[int] = None
+    for index in range(monitors.get_n_items()):
+        monitor = monitors.get_item(index)
+        geo = monitor.get_geometry()
+        min_x = geo.x if min_x is None else min(min_x, geo.x)
+        min_y = geo.y if min_y is None else min(min_y, geo.y)
+        max_x = geo.x + geo.width if max_x is None else max(max_x, geo.x + geo.width)
+        max_y = geo.y + geo.height if max_y is None else max(max_y, geo.y + geo.height)
+
+    if min_x is None or min_y is None or max_x is None or max_y is None:
+        return 0, 0, 1920, 1080
+    return min_x, min_y, max_x - min_x, max_y - min_y

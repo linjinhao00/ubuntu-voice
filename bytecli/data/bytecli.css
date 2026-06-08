@@ -207,11 +207,11 @@ window.indicator-window {
 .indicator-pill {
     background-color: alpha(#151515, 0.72);
     border-radius: 20px;
-    border: 1px solid alpha(#FFFFFF, 0.12);
+    border: 1px solid alpha(#FFFFFF, 0.10);
     padding: 6px 8px;
     min-width: 140px;
     min-height: 26px;
-    box-shadow: 0 8px 24px alpha(#000000, 0.36);
+    box-shadow: none;
 }
 
 .indicator-pill-recording {
@@ -229,7 +229,7 @@ window.indicator-window {
 }
 
 .indicator-waveform {
-    min-width: 42px;
+    min-width: 88px;
     min-height: 18px;
 }
 

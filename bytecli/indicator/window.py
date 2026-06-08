@@ -2,9 +2,8 @@
 IndicatorWindow -- floating pill-shaped status indicator.
 
 Sits at the bottom-center of the primary monitor displaying the current
-dictation state (idle / recording) with an elapsed-time counter.  On
-hover the widget expands to reveal a History button that opens the
-HistoryPanel popup.
+dictation state. A short click opens the transcription history; dragging
+the pill moves it and persists the new position.
 """
 
 from __future__ import annotations
@@ -31,10 +30,12 @@ _BOTTOM_MARGIN = 92
 _PILL_WIDTH = 160
 _PILL_HEIGHT = 40
 _WAVE_BAR_COUNT = 7
-_POINTER_POLL_MS = 30
+_POINTER_POLL_MS = 5
 _VISIBILITY_GUARD_MS = 1500
+_CLICK_DRAG_THRESHOLD = 6
 
 _X11_DISPLAY = None
+_X11_CAPTURE_XID: Optional[int] = None
 _SCREEN_GEOMETRY: Optional[tuple[int, int, int, int]] = None
 
 
@@ -65,6 +66,7 @@ class IndicatorWindow(Gtk.Window):
         self._saved_position = self._load_saved_position()
         self._drag_origin: tuple[int, int] | None = None
         self._drag_pointer_origin: tuple[int, int] | None = None
+        self._drag_moved = False
         self._indicator_geo: tuple[int, int, int, int] = (
             0,
             0,
@@ -109,20 +111,23 @@ class IndicatorWindow(Gtk.Window):
         # --- Live waveform (visible while recording) ---------------------
         self._wave = Gtk.DrawingArea()
         self._wave.add_css_class("indicator-waveform")
-        self._wave.set_size_request(42, 18)
+        self._wave.set_hexpand(True)
+        self._wave.set_size_request(88, 18)
         self._wave.set_valign(Gtk.Align.CENTER)
         self._wave.set_draw_func(self._draw_waveform)
-        self._wave.set_opacity(0.0)
+        self._wave.set_visible(False)
         self._pill_box.append(self._wave)
 
         # --- Status text -------------------------------------------------
-        self._status_label = Gtk.Label(label=i18n.t("indicator.idle", fallback="Idle"))
+        self._status_label = Gtk.Label(label="空闲")
         self._status_label.add_css_class("mono")
         self._status_label.add_css_class("font-medium")
         self._status_label.set_valign(Gtk.Align.CENTER)
-        self._status_label.set_size_request(36, -1)
-        self._status_label.set_width_chars(4)
-        self._status_label.set_max_width_chars(5)
+        self._status_label.set_halign(Gtk.Align.CENTER)
+        self._status_label.set_hexpand(True)
+        self._status_label.set_size_request(104, -1)
+        self._status_label.set_width_chars(6)
+        self._status_label.set_max_width_chars(8)
         self._status_label.set_ellipsize(Pango.EllipsizeMode.END)
         _apply_font_size(self._status_label, 12)
         self._pill_box.append(self._status_label)
@@ -132,9 +137,10 @@ class IndicatorWindow(Gtk.Window):
         self._timer_label.add_css_class("mono")
         self._timer_label.add_css_class("text-muted")
         self._timer_label.set_valign(Gtk.Align.CENTER)
-        self._timer_label.set_size_request(34, -1)
+        self._timer_label.set_halign(Gtk.Align.END)
+        self._timer_label.set_size_request(40, -1)
         _apply_font_size(self._timer_label, 12)
-        self._timer_label.set_opacity(0.0)
+        self._timer_label.set_visible(False)
         self._pill_box.append(self._timer_label)
 
         # --- Separator (visible on hover) --------------------------------
@@ -424,34 +430,64 @@ class IndicatorWindow(Gtk.Window):
         self._dbus_client.save_config(config, callback=_on_saved)
 
     def _watch_pointer_drag(self) -> bool:
+        xid = self.get_xid()
+        for event_type, pointer_x, pointer_y in _drain_x11_pointer_events(xid):
+            if event_type == "press":
+                self._begin_pointer_action(pointer_x, pointer_y)
+            elif event_type == "motion":
+                self._update_pointer_action(pointer_x, pointer_y)
+            elif event_type == "release":
+                self._finish_pointer_action()
+
         pointer = _get_pointer_state()
         if pointer is None:
             return True
 
         pointer_x, pointer_y, window_id, button_down = pointer
         if self._drag_origin is None:
-            if button_down and window_id == self.get_xid():
-                x, y, _, _ = self._indicator_geo
-                self._drag_origin = (x, y)
-                self._drag_pointer_origin = (pointer_x, pointer_y)
+            if button_down and window_id == xid:
+                self._begin_pointer_action(pointer_x, pointer_y)
             return True
 
         if button_down and self._drag_pointer_origin is not None:
-            origin_x, origin_y = self._drag_origin
-            pointer_origin_x, pointer_origin_y = self._drag_pointer_origin
-            x, y = self._clamp_to_display(
-                origin_x + pointer_x - pointer_origin_x,
-                origin_y + pointer_y - pointer_origin_y,
-            )
-            if (x, y) != self._indicator_geo[:2]:
-                self._saved_position = {"x": x, "y": y}
-                self._move_to(x, y)
+            self._update_pointer_action(pointer_x, pointer_y)
             return True
 
+        self._finish_pointer_action()
+        return True
+
+    def _begin_pointer_action(self, pointer_x: int, pointer_y: int) -> None:
+        x, y, _, _ = self._indicator_geo
+        self._drag_origin = (x, y)
+        self._drag_pointer_origin = (pointer_x, pointer_y)
+        self._drag_moved = False
+
+    def _update_pointer_action(self, pointer_x: int, pointer_y: int) -> None:
+        if self._drag_origin is None or self._drag_pointer_origin is None:
+            return
+        origin_x, origin_y = self._drag_origin
+        pointer_origin_x, pointer_origin_y = self._drag_pointer_origin
+        delta_x = pointer_x - pointer_origin_x
+        delta_y = pointer_y - pointer_origin_y
+        if abs(delta_x) < _CLICK_DRAG_THRESHOLD and abs(delta_y) < _CLICK_DRAG_THRESHOLD:
+            return
+        self._drag_moved = True
+        x, y = self._clamp_to_display(origin_x + delta_x, origin_y + delta_y)
+        if (x, y) != self._indicator_geo[:2]:
+            self._saved_position = {"x": x, "y": y}
+            self._move_to(x, y)
+
+    def _finish_pointer_action(self) -> None:
+        if self._drag_origin is None:
+            return
+        was_dragged = self._drag_moved
         self._drag_origin = None
         self._drag_pointer_origin = None
-        self._save_position()
-        return True
+        self._drag_moved = False
+        if was_dragged:
+            self._save_position()
+        else:
+            self._toggle_history_panel()
 
     # ------------------------------------------------------------------
     # Hover logic
@@ -492,13 +528,20 @@ class IndicatorWindow(Gtk.Window):
             pass
         return 0
 
+    def get_indicator_geometry(self) -> tuple[int, int, int, int]:
+        return self._indicator_geo
+
     def _on_history_clicked(self, button: Gtk.Button) -> None:
+        self._toggle_history_panel()
+
+    def _toggle_history_panel(self) -> None:
         from bytecli.indicator.history_panel import HistoryPanel
 
         if self._history_panel is not None:
             self._history_panel.set_visible(not self._history_panel.get_visible())
             if self._history_panel.get_visible():
                 self._history_panel.refresh()
+                self._history_panel.reposition()
             return
 
         self._history_panel = HistoryPanel(
@@ -507,6 +550,7 @@ class IndicatorWindow(Gtk.Window):
         )
         self._history_panel.connect("hide", self._on_history_hidden)
         self._history_panel.present()
+        self._history_panel.reposition()
 
     def _on_history_hidden(self, widget) -> None:
         # Trigger the leave-hide logic after the panel closes.
@@ -525,11 +569,11 @@ class IndicatorWindow(Gtk.Window):
         self._stop_wave()
         self._audio_level = 0.0
         self._clear_state_classes()
-        self._dot.set_visible(True)
+        self._dot.set_visible(False)
         self._status_label.set_visible(True)
-        self._status_label.set_text(i18n.t("indicator.idle", fallback="Idle"))
-        self._timer_label.set_opacity(0.0)
-        self._wave.set_opacity(0.0)
+        self._status_label.set_text("空闲")
+        self._timer_label.set_visible(False)
+        self._wave.set_visible(False)
         self._dot.queue_draw()
         self._wave.queue_draw()
         self._queue_reposition()
@@ -556,8 +600,8 @@ class IndicatorWindow(Gtk.Window):
         else:
             self._status_label.set_text("Loading model...")
 
-        self._timer_label.set_opacity(0.0)
-        self._wave.set_opacity(0.0)
+        self._timer_label.set_visible(False)
+        self._wave.set_visible(False)
         self._dot.queue_draw()
         self._wave.queue_draw()
         self._queue_reposition()
@@ -573,8 +617,8 @@ class IndicatorWindow(Gtk.Window):
         self._wave_phase = 0.0
         self._timer_seconds = 0
         self._timer_label.set_text("00:00")
-        self._timer_label.set_opacity(1.0)
-        self._wave.set_opacity(1.0)
+        self._timer_label.set_visible(True)
+        self._wave.set_visible(True)
         self._dot.set_visible(False)
         self._status_label.set_visible(False)
         self._dot.queue_draw()
@@ -592,13 +636,11 @@ class IndicatorWindow(Gtk.Window):
         self._stop_wave()
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-transcribing")
-        self._dot.set_visible(True)
+        self._dot.set_visible(False)
         self._status_label.set_visible(True)
-        self._timer_label.set_opacity(0.0)
-        self._wave.set_opacity(0.0)
-        self._status_label.set_text(
-            i18n.t("indicator.transcribing", fallback="Transcribing...")
-        )
+        self._timer_label.set_visible(False)
+        self._wave.set_visible(False)
+        self._status_label.set_text("转录中")
         self._start_pulse()
         self._dot.queue_draw()
         self._queue_reposition()
@@ -779,6 +821,50 @@ def _get_pointer_state() -> Optional[tuple[int, int, int, bool]]:
         logger.debug("Could not read X11 pointer state: %s", exc)
         _X11_DISPLAY = None
         return None
+
+
+def _drain_x11_pointer_events(xid: int) -> list[tuple[str, int, int]]:
+    global _X11_DISPLAY, _X11_CAPTURE_XID
+    if not xid:
+        return []
+
+    try:
+        from Xlib import X, display
+
+        if _X11_DISPLAY is None:
+            _X11_DISPLAY = display.Display()
+
+        if _X11_CAPTURE_XID != xid:
+            window = _X11_DISPLAY.create_resource_object("window", xid)
+            window.change_attributes(
+                event_mask=(
+                    X.ButtonPressMask
+                    | X.ButtonReleaseMask
+                    | X.PointerMotionMask
+                    | X.ButtonMotionMask
+                )
+            )
+            _X11_DISPLAY.flush()
+            _X11_CAPTURE_XID = xid
+
+        events: list[tuple[str, int, int]] = []
+        while _X11_DISPLAY.pending_events():
+            event = _X11_DISPLAY.next_event()
+            event_xid = int(getattr(getattr(event, "window", None), "id", 0) or 0)
+            if event_xid != xid:
+                continue
+            if event.type == X.ButtonPress:
+                events.append(("press", int(event.root_x), int(event.root_y)))
+            elif event.type == X.MotionNotify:
+                events.append(("motion", int(event.root_x), int(event.root_y)))
+            elif event.type == X.ButtonRelease:
+                events.append(("release", int(event.root_x), int(event.root_y)))
+        return events
+    except Exception as exc:
+        logger.debug("Could not drain X11 pointer events: %s", exc)
+        _X11_DISPLAY = None
+        _X11_CAPTURE_XID = None
+        return []
 
 
 def _get_virtual_screen_geometry() -> Optional[tuple[int, int, int, int]]:
