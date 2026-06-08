@@ -29,7 +29,7 @@ error()   { echo -e "${RED}[ERR]${NC}  $*"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="1.1.5-local6"
+VERSION="1.1.5-local7"
 PY_PROJECT_VERSION="1.1.0"
 PY_PACKAGE_NAME="bytecli"
 PACKAGE_NAME="bytecli-remote-asr"
@@ -154,7 +154,7 @@ Priority: optional
 Architecture: all
 Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1,
          python3-dbus, xclip, xdotool, x11-utils, libportaudio2, python3-numpy,
-         python3-pip
+         python3-pip, python3-xlib
 Description: ByteCLI local Qwen/Fun/Sherpa ASR dictation variant
  Parallel-installable ByteCLI variant exposing local Qwen3-ASR-0.6B,
  Fun-ASR-Nano, and sherpa-onnx ASR profiles. It installs separate command

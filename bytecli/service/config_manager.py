@@ -98,6 +98,10 @@ class ConfigManager:
             default_correction = self.get_default_config()["text_correction"]
             default_correction.update(data["text_correction"])
             merged["text_correction"] = default_correction
+        if "indicator" in data and isinstance(data["indicator"], dict):
+            default_indicator = self.get_default_config()["indicator"]
+            default_indicator.update(data["indicator"])
+            merged["indicator"] = default_indicator
 
         errors = self.validate(merged)
         if errors:
@@ -187,6 +191,19 @@ class ConfigManager:
         hme = config_dict.get("history_max_entries")
         if not isinstance(hme, int) or not (1 <= hme <= 500):
             errors.append("history_max_entries")
+
+        indicator = config_dict.get("indicator")
+        if not isinstance(indicator, dict):
+            errors.append("indicator")
+        else:
+            position = indicator.get("position")
+            if position is not None:
+                if (
+                    not isinstance(position, dict)
+                    or not isinstance(position.get("x"), int)
+                    or not isinstance(position.get("y"), int)
+                ):
+                    errors.append("indicator.position")
 
         remote = config_dict.get("remote_asr")
         if not isinstance(remote, dict):

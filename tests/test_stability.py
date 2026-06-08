@@ -194,6 +194,15 @@ class TestConfigManager:
         config["text_correction"]["backend"] = "remote"
         assert "text_correction.backend" in mgr.validate(config)
 
+    def test_validate_indicator_position_config(self, tmp_path):
+        mgr = self._make_manager(str(tmp_path))
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config["indicator"] = {"position": {"x": 880, "y": 910}}
+        assert mgr.validate(config) == []
+
+        config["indicator"]["position"] = {"x": 880.5, "y": 910}
+        assert "indicator.position" in mgr.validate(config)
+
     def test_validate_single_function_key_hotkey(self, tmp_path):
         mgr = self._make_manager(str(tmp_path))
         good = copy.deepcopy(DEFAULT_CONFIG)

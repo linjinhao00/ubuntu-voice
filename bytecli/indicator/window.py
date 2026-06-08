@@ -28,9 +28,13 @@ logger = logging.getLogger(__name__)
 
 # Margin from the bottom edge of the screen.
 _BOTTOM_MARGIN = 92
-_PILL_WIDTH = 300
-_PILL_HEIGHT = 44
-_WAVE_BAR_COUNT = 11
+_PILL_WIDTH = 160
+_PILL_HEIGHT = 40
+_WAVE_BAR_COUNT = 7
+_POINTER_POLL_MS = 30
+
+_X11_DISPLAY = None
+_SCREEN_GEOMETRY: Optional[tuple[int, int, int, int]] = None
 
 
 class IndicatorWindow(Gtk.Window):
@@ -54,14 +58,23 @@ class IndicatorWindow(Gtk.Window):
         self._pulse_source_id: Optional[int] = None
         self._wave_source_id: Optional[int] = None
         self._leave_timeout_id: Optional[int] = None
+        self._pointer_poll_source_id: Optional[int] = None
         self._history_panel = None
-        self._indicator_geo: tuple[int, int, int, int] = (0, 0, 280, _PILL_HEIGHT)
+        self._saved_position = self._load_saved_position()
+        self._drag_origin: tuple[int, int] | None = None
+        self._drag_pointer_origin: tuple[int, int] | None = None
+        self._indicator_geo: tuple[int, int, int, int] = (
+            0,
+            0,
+            _PILL_WIDTH,
+            _PILL_HEIGHT,
+        )
 
         # Window chrome.
         self.set_decorated(False)
         self.set_resizable(False)
-        self.set_can_focus(False)
-        self.set_focusable(False)
+        self.set_can_focus(True)
+        self.set_focusable(True)
         self.set_title("ByteCLI Indicator")
         self.add_css_class("indicator-window")
         self.set_default_size(_PILL_WIDTH, _PILL_HEIGHT)
@@ -78,15 +91,15 @@ class IndicatorWindow(Gtk.Window):
 
     def _build_ui(self) -> None:
         # Root box with the pill CSS class.
-        self._pill_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self._pill_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         self._pill_box.add_css_class("indicator-pill")
         self._pill_box.set_size_request(_PILL_WIDTH, _PILL_HEIGHT)
         self._pill_box.set_margin_start(0)
         self._pill_box.set_margin_end(0)
 
-        # --- Status dot (8x8 DrawingArea) --------------------------------
+        # --- Status dot ---------------------------------------------------
         self._dot = Gtk.DrawingArea()
-        self._dot.set_size_request(8, 8)
+        self._dot.set_size_request(7, 7)
         self._dot.set_valign(Gtk.Align.CENTER)
         self._dot.set_draw_func(self._draw_dot)
         self._pill_box.append(self._dot)
@@ -94,7 +107,7 @@ class IndicatorWindow(Gtk.Window):
         # --- Live waveform (visible while recording) ---------------------
         self._wave = Gtk.DrawingArea()
         self._wave.add_css_class("indicator-waveform")
-        self._wave.set_size_request(84, 22)
+        self._wave.set_size_request(42, 18)
         self._wave.set_valign(Gtk.Align.CENTER)
         self._wave.set_draw_func(self._draw_waveform)
         self._wave.set_opacity(0.0)
@@ -105,12 +118,11 @@ class IndicatorWindow(Gtk.Window):
         self._status_label.add_css_class("mono")
         self._status_label.add_css_class("font-medium")
         self._status_label.set_valign(Gtk.Align.CENTER)
-        self._status_label.set_size_request(96, -1)
-        self._status_label.set_width_chars(10)
-        self._status_label.set_max_width_chars(12)
+        self._status_label.set_size_request(36, -1)
+        self._status_label.set_width_chars(4)
+        self._status_label.set_max_width_chars(5)
         self._status_label.set_ellipsize(Pango.EllipsizeMode.END)
-        # 13px via inline style
-        _apply_font_size(self._status_label, 13)
+        _apply_font_size(self._status_label, 12)
         self._pill_box.append(self._status_label)
 
         # --- Timer label (visible only while recording) ------------------
@@ -118,8 +130,8 @@ class IndicatorWindow(Gtk.Window):
         self._timer_label.add_css_class("mono")
         self._timer_label.add_css_class("text-muted")
         self._timer_label.set_valign(Gtk.Align.CENTER)
-        self._timer_label.set_size_request(44, -1)
-        _apply_font_size(self._timer_label, 13)
+        self._timer_label.set_size_request(34, -1)
+        _apply_font_size(self._timer_label, 12)
         self._timer_label.set_opacity(0.0)
         self._pill_box.append(self._timer_label)
 
@@ -219,6 +231,11 @@ class IndicatorWindow(Gtk.Window):
         GLib.idle_add(self._position_on_screen)
         GLib.timeout_add(250, self._position_on_screen)
         GLib.timeout_add(900, self._position_on_screen)
+        if self._pointer_poll_source_id is None:
+            self._pointer_poll_source_id = GLib.timeout_add(
+                _POINTER_POLL_MS,
+                self._watch_pointer_drag,
+            )
 
     def _apply_x11_properties(self) -> bool:
         """Use xprop to set the window type and state via the X11 window id."""
@@ -266,7 +283,7 @@ class IndicatorWindow(Gtk.Window):
         return False  # do not repeat
 
     def _position_on_screen(self) -> bool:
-        """Center the window at the bottom of the primary monitor."""
+        """Move the window to the saved position or the bottom-center default."""
         display = Gdk.Display.get_default()
         if display is None:
             return False
@@ -278,10 +295,20 @@ class IndicatorWindow(Gtk.Window):
         monitor = monitors.get_item(0)
         geo = monitor.get_geometry()
 
-        nat_width = _PILL_WIDTH
-        x = geo.x + (geo.width - nat_width) // 2
-        y = geo.y + geo.height - _BOTTOM_MARGIN - _PILL_HEIGHT
-        self._indicator_geo = (x, y, nat_width, _PILL_HEIGHT)
+        if self._saved_position is not None:
+            x = int(self._saved_position["x"])
+            y = int(self._saved_position["y"])
+        else:
+            x = geo.x + (geo.width - _PILL_WIDTH) // 2
+            y = geo.y + geo.height - _BOTTOM_MARGIN - _PILL_HEIGHT
+
+        x, y = self._clamp_to_display(x, y)
+        self._move_to(x, y)
+        return False  # do not repeat
+
+    def _move_to(self, x: int, y: int) -> None:
+        """Move the indicator to absolute screen coordinates."""
+        self._indicator_geo = (x, y, _PILL_WIDTH, _PILL_HEIGHT)
 
         surface = self.get_surface()
         moved = False
@@ -299,7 +326,104 @@ class IndicatorWindow(Gtk.Window):
         if not moved:
             _move_indicator_window_by_name(x, y)
 
-        return False  # do not repeat
+    def _clamp_to_display(self, x: int, y: int) -> tuple[int, int]:
+        virtual_geo = _get_virtual_screen_geometry()
+        if virtual_geo is not None:
+            geo_x, geo_y, geo_width, geo_height = virtual_geo
+            clamped_x = max(geo_x, min(x, geo_x + geo_width - _PILL_WIDTH))
+            clamped_y = max(geo_y, min(y, geo_y + geo_height - _PILL_HEIGHT))
+            return clamped_x, clamped_y
+
+        display = Gdk.Display.get_default()
+        if display is None:
+            return x, y
+
+        monitors = display.get_monitors()
+        if monitors.get_n_items() == 0:
+            return x, y
+
+        min_x: Optional[int] = None
+        min_y: Optional[int] = None
+        max_x: Optional[int] = None
+        max_y: Optional[int] = None
+        for index in range(monitors.get_n_items()):
+            monitor = monitors.get_item(index)
+            geo = monitor.get_geometry()
+            min_x = geo.x if min_x is None else min(min_x, geo.x)
+            min_y = geo.y if min_y is None else min(min_y, geo.y)
+            max_x = geo.x + geo.width if max_x is None else max(max_x, geo.x + geo.width)
+            max_y = geo.y + geo.height if max_y is None else max(max_y, geo.y + geo.height)
+
+        if min_x is None or min_y is None or max_x is None or max_y is None:
+            return x, y
+
+        clamped_x = max(min_x, min(x, max_x - _PILL_WIDTH))
+        clamped_y = max(min_y, min(y, max_y - _PILL_HEIGHT))
+        return clamped_x, clamped_y
+
+    def _load_saved_position(self) -> Optional[dict[str, int]]:
+        config = self._dbus_client.get_config()
+        if not isinstance(config, dict):
+            return None
+        indicator = config.get("indicator")
+        if not isinstance(indicator, dict):
+            return None
+        position = indicator.get("position")
+        if not isinstance(position, dict):
+            return None
+        x = position.get("x")
+        y = position.get("y")
+        if not isinstance(x, int) or not isinstance(y, int):
+            return None
+        return {"x": x, "y": y}
+
+    def _save_position(self) -> None:
+        config = self._dbus_client.get_config()
+        if not isinstance(config, dict):
+            return
+
+        x, y, _, _ = self._indicator_geo
+        indicator = config.get("indicator")
+        if not isinstance(indicator, dict):
+            indicator = {}
+            config["indicator"] = indicator
+        indicator["position"] = {"x": int(x), "y": int(y)}
+
+        def _on_saved(success: bool, result) -> None:
+            if not success:
+                logger.warning("Failed to persist indicator position: %s", result)
+
+        self._dbus_client.save_config(config, callback=_on_saved)
+
+    def _watch_pointer_drag(self) -> bool:
+        pointer = _get_pointer_state()
+        if pointer is None:
+            return True
+
+        pointer_x, pointer_y, window_id, button_down = pointer
+        if self._drag_origin is None:
+            if button_down and window_id == self.get_xid():
+                x, y, _, _ = self._indicator_geo
+                self._drag_origin = (x, y)
+                self._drag_pointer_origin = (pointer_x, pointer_y)
+            return True
+
+        if button_down and self._drag_pointer_origin is not None:
+            origin_x, origin_y = self._drag_origin
+            pointer_origin_x, pointer_origin_y = self._drag_pointer_origin
+            x, y = self._clamp_to_display(
+                origin_x + pointer_x - pointer_origin_x,
+                origin_y + pointer_y - pointer_origin_y,
+            )
+            if (x, y) != self._indicator_geo[:2]:
+                self._saved_position = {"x": x, "y": y}
+                self._move_to(x, y)
+            return True
+
+        self._drag_origin = None
+        self._drag_pointer_origin = None
+        self._save_position()
+        return True
 
     # ------------------------------------------------------------------
     # Hover logic
@@ -309,12 +433,9 @@ class IndicatorWindow(Gtk.Window):
         if self._leave_timeout_id is not None:
             GLib.source_remove(self._leave_timeout_id)
             self._leave_timeout_id = None
-        self._separator.set_visible(True)
-        self._history_btn.set_visible(True)
 
     def _on_mouse_leave(self, controller) -> None:
-        # Delay hiding so the user can reach the history button / panel.
-        self._leave_timeout_id = GLib.timeout_add(400, self._hide_hover_widgets)
+        self._hide_hover_widgets()
 
     def _hide_hover_widgets(self) -> bool:
         """Hide separator and history button after mouse leaves."""
@@ -575,3 +696,53 @@ def _move_indicator_window_by_name(x: int, y: int) -> None:
         )
     except FileNotFoundError:
         logger.debug("xdotool not found; cannot move indicator by title.")
+
+
+def _get_pointer_state() -> Optional[tuple[int, int, int, bool]]:
+    global _X11_DISPLAY
+
+    try:
+        from Xlib import X, display
+
+        if _X11_DISPLAY is None:
+            _X11_DISPLAY = display.Display()
+
+        pointer = _X11_DISPLAY.screen().root.query_pointer()
+        window_id = int(pointer.child.id) if pointer.child else 0
+        button_down = bool(pointer.mask & X.Button1Mask)
+        return int(pointer.root_x), int(pointer.root_y), window_id, button_down
+    except Exception as exc:
+        logger.debug("Could not read X11 pointer state: %s", exc)
+        _X11_DISPLAY = None
+        return None
+
+
+def _get_virtual_screen_geometry() -> Optional[tuple[int, int, int, int]]:
+    global _SCREEN_GEOMETRY
+    if _SCREEN_GEOMETRY is not None:
+        return _SCREEN_GEOMETRY
+
+    try:
+        output = subprocess.check_output(
+            ["xrandr"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=0.5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+    for line in output.splitlines():
+        if " current " not in line:
+            continue
+        parts = line.split()
+        try:
+            current_index = parts.index("current")
+            width = int(parts[current_index + 1])
+            height = int(parts[current_index + 3].rstrip(","))
+        except (ValueError, IndexError):
+            return None
+        _SCREEN_GEOMETRY = (0, 0, width, height)
+        return _SCREEN_GEOMETRY
+
+    return None

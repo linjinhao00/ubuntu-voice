@@ -376,6 +376,9 @@ DEFAULT_CONFIG: dict = {
     "language": "en",
     "auto_start": False,
     "history_max_entries": 50,
+    "indicator": {
+        "position": None,
+    },
     "remote_asr": {
         "endpoint": _REMOTE_ASR_ENDPOINT,
         "api_token": "",

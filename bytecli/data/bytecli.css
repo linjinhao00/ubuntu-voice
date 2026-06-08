@@ -205,23 +205,23 @@ window.indicator-window {
 }
 
 .indicator-pill {
-    background-color: alpha(#151515, 0.96);
-    border-radius: 22px;
+    background-color: alpha(#151515, 0.72);
+    border-radius: 20px;
     border: 1px solid alpha(#FFFFFF, 0.12);
-    padding: 7px 14px;
-    min-width: 272px;
-    min-height: 30px;
+    padding: 6px 8px;
+    min-width: 140px;
+    min-height: 26px;
     box-shadow: 0 8px 24px alpha(#000000, 0.36);
 }
 
 .indicator-pill-recording {
     border-color: alpha(@primary_color, 0.72);
-    background-color: alpha(#1A1510, 0.98);
+    background-color: alpha(#1A1510, 0.76);
 }
 
 .indicator-pill-transcribing {
     border-color: alpha(@info_fg_color, 0.68);
-    background-color: alpha(#131526, 0.98);
+    background-color: alpha(#131526, 0.76);
 }
 
 .indicator-pill-downloading {
@@ -229,8 +229,8 @@ window.indicator-window {
 }
 
 .indicator-waveform {
-    min-width: 84px;
-    min-height: 22px;
+    min-width: 42px;
+    min-height: 18px;
 }
 
 /* ===================================================================

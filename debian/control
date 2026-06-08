@@ -5,7 +5,7 @@ Priority: optional
 Architecture: all
 Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1,
          python3-dbus, xclip, xdotool, x11-utils, libportaudio2, python3-numpy,
-         python3-pip
+         python3-pip, python3-xlib
 Description: Local voice dictation for Linux, powered by local ASR models
  Press Alt to record, release to transcribe and paste.
  Runs entirely offline using SenseVoice, Fun-ASR-Nano, Qwen3-ASR,
