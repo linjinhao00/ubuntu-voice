@@ -1033,7 +1033,7 @@ class WhisperEngine:
         )
         headers = {
             "Content-Type": content_type,
-            "User-Agent": "bytecli-remote-asr/1.1.0",
+            "User-Agent": "bytecli-remote-asr/1.1.6",
         }
         token = str(self._model.get("token") or "")
         if token:

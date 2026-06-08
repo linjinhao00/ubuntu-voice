@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="bytecli",
-    version="1.1.0",
+    version="1.1.6",
     description="Local voice-to-text dictation tool for Ubuntu/Linux",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",

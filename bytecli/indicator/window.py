@@ -32,6 +32,7 @@ _PILL_WIDTH = 160
 _PILL_HEIGHT = 40
 _WAVE_BAR_COUNT = 7
 _POINTER_POLL_MS = 30
+_VISIBILITY_GUARD_MS = 1500
 
 _X11_DISPLAY = None
 _SCREEN_GEOMETRY: Optional[tuple[int, int, int, int]] = None
@@ -59,6 +60,7 @@ class IndicatorWindow(Gtk.Window):
         self._wave_source_id: Optional[int] = None
         self._leave_timeout_id: Optional[int] = None
         self._pointer_poll_source_id: Optional[int] = None
+        self._visibility_guard_source_id: Optional[int] = None
         self._history_panel = None
         self._saved_position = self._load_saved_position()
         self._drag_origin: tuple[int, int] | None = None
@@ -73,8 +75,8 @@ class IndicatorWindow(Gtk.Window):
         # Window chrome.
         self.set_decorated(False)
         self.set_resizable(False)
-        self.set_can_focus(True)
-        self.set_focusable(True)
+        self.set_can_focus(False)
+        self.set_focusable(False)
         self.set_title("ByteCLI Indicator")
         self.add_css_class("indicator-window")
         self.set_default_size(_PILL_WIDTH, _PILL_HEIGHT)
@@ -236,6 +238,11 @@ class IndicatorWindow(Gtk.Window):
                 _POINTER_POLL_MS,
                 self._watch_pointer_drag,
             )
+        if self._visibility_guard_source_id is None:
+            self._visibility_guard_source_id = GLib.timeout_add(
+                _VISIBILITY_GUARD_MS,
+                self._ensure_visible,
+            )
 
     def _apply_x11_properties(self) -> bool:
         """Use xprop to set the window type and state via the X11 window id."""
@@ -261,7 +268,7 @@ class IndicatorWindow(Gtk.Window):
                     "xprop",
                     "-id", str(xid),
                     "-f", "_NET_WM_WINDOW_TYPE", "32a",
-                    "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_UTILITY",
+                    "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_NOTIFICATION",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -272,15 +279,36 @@ class IndicatorWindow(Gtk.Window):
                     "-id", str(xid),
                     "-f", "_NET_WM_STATE", "32a",
                     "-set", "_NET_WM_STATE",
-                    "_NET_WM_STATE_ABOVE,_NET_WM_STATE_STICKY,_NET_WM_STATE_SKIP_TASKBAR",
+                    "_NET_WM_STATE_ABOVE,_NET_WM_STATE_STICKY,"
+                    "_NET_WM_STATE_SKIP_TASKBAR,_NET_WM_STATE_SKIP_PAGER",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            _apply_x11_window_state(xid)
         except FileNotFoundError:
             logger.warning("xprop not found; indicator may not stay above other windows.")
 
         return False  # do not repeat
+
+    def _ensure_visible(self) -> bool:
+        """Keep the indicator mapped and above regular application windows."""
+        if not self.get_visible():
+            self.set_visible(True)
+            self._queue_reposition()
+
+        surface = self.get_surface()
+        if surface is not None:
+            try:
+                from gi.repository import GdkX11
+
+                if isinstance(surface, GdkX11.X11Surface):
+                    xid = surface.get_xid()
+                    _apply_x11_window_state(xid)
+                    _raise_x11_window(xid)
+            except (ImportError, AttributeError):
+                pass
+        return True
 
     def _position_on_screen(self) -> bool:
         """Move the window to the saved position or the bottom-center default."""
@@ -389,9 +417,9 @@ class IndicatorWindow(Gtk.Window):
             config["indicator"] = indicator
         indicator["position"] = {"x": int(x), "y": int(y)}
 
-        def _on_saved(success: bool, result) -> None:
-            if not success:
-                logger.warning("Failed to persist indicator position: %s", result)
+        def _on_saved(result) -> None:
+            if result is None:
+                logger.warning("Failed to persist indicator position.")
 
         self._dbus_client.save_config(config, callback=_on_saved)
 
@@ -497,6 +525,8 @@ class IndicatorWindow(Gtk.Window):
         self._stop_wave()
         self._audio_level = 0.0
         self._clear_state_classes()
+        self._dot.set_visible(True)
+        self._status_label.set_visible(True)
         self._status_label.set_text(i18n.t("indicator.idle", fallback="Idle"))
         self._timer_label.set_opacity(0.0)
         self._wave.set_opacity(0.0)
@@ -515,6 +545,8 @@ class IndicatorWindow(Gtk.Window):
         self._audio_level = 0.0
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-downloading")
+        self._dot.set_visible(True)
+        self._status_label.set_visible(True)
 
         if percent < 0:
             # Error state.
@@ -543,7 +575,8 @@ class IndicatorWindow(Gtk.Window):
         self._timer_label.set_text("00:00")
         self._timer_label.set_opacity(1.0)
         self._wave.set_opacity(1.0)
-        self._status_label.set_text(i18n.t("indicator.recording", fallback="Recording"))
+        self._dot.set_visible(False)
+        self._status_label.set_visible(False)
         self._dot.queue_draw()
         self._wave.queue_draw()
         self._queue_reposition()
@@ -559,6 +592,8 @@ class IndicatorWindow(Gtk.Window):
         self._stop_wave()
         self._clear_state_classes()
         self._pill_box.add_css_class("indicator-pill-transcribing")
+        self._dot.set_visible(True)
+        self._status_label.set_visible(True)
         self._timer_label.set_opacity(0.0)
         self._wave.set_opacity(0.0)
         self._status_label.set_text(
@@ -676,6 +711,35 @@ def _move_x11_window(xid: int, x: int, y: int) -> None:
         )
     except FileNotFoundError:
         logger.debug("xdotool not found; relying on GDK window move.")
+
+
+def _raise_x11_window(xid: int) -> None:
+    try:
+        subprocess.Popen(
+            ["xdotool", "windowraise", str(xid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        logger.debug("xdotool not found; cannot raise indicator window.")
+
+
+def _apply_x11_window_state(xid: int) -> None:
+    try:
+        subprocess.Popen(
+            [
+                "wmctrl",
+                "-i",
+                "-r",
+                str(xid),
+                "-b",
+                "add,above,sticky,skip_taskbar,skip_pager",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        logger.debug("wmctrl not found; relying on xprop window state hints.")
 
 
 def _move_indicator_window_by_name(x: int, y: int) -> None:
